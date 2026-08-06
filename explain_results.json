@@ -1,0 +1,380 @@
+{
+  "aggregate": {
+    "field_table": [
+      {
+        "removed_field": "speaker_name",
+        "flip_rate": 0.083,
+        "mean_abs_delta": 0.087
+      },
+      {
+        "removed_field": "speaker_affiliation",
+        "flip_rate": 0.03,
+        "mean_abs_delta": 0.028
+      },
+      {
+        "removed_field": "subjects",
+        "flip_rate": 0.047,
+        "mean_abs_delta": 0.061
+      },
+      {
+        "removed_field": "statement_context",
+        "flip_rate": 0.053,
+        "mean_abs_delta": 0.05
+      },
+      {
+        "removed_field": "all_metadata",
+        "flip_rate": 0.123,
+        "mean_abs_delta": 0.153
+      }
+    ],
+    "driver_distribution": {
+      "statement": 157,
+      "subjects": 28,
+      "speaker_name": 80,
+      "statement_context": 17,
+      "speaker_affiliation": 18
+    },
+    "rationale_occlusion_agreement_rate": 0.46,
+    "n": 300
+  },
+  "metrics": {
+    "accuracy": 0.6833333333333333,
+    "balanced_accuracy": 0.6824729891956738,
+    "macro_f1": 0.6823132057379229,
+    "precision_True": 0.6768292682926789,
+    "recall_True": 0.7254901960784267,
+    "precision_False": 0.6911764705882303,
+    "recall_False": 0.6394557823129209,
+    "roc_auc": 0.6811835845449291,
+    "pr_auc": 0.6277044927037583,
+    "brier": 0.2705,
+    "ece": 0.2053333333333334
+  },
+  "examples": [
+    {
+      "row_id": 6974,
+      "statement": "Under Obamas plan (for welfare), you wouldnt have to work and wouldnt have to train for a job. They just send you your welfare check.",
+      "label": 0,
+      "pred": 0,
+      "base_prob": 0.2,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.15,
+          "delta": 0.05,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 0.15,
+          "delta": 0.05,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.2,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 0.2,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.1,
+          "delta": 0.1,
+          "flip": 0
+        }
+      },
+      "driver": "statement",
+      "rationale": "The statement is false because the Obama administration's welfare policies maintained work requirements and encouraged job training.",
+      "rationale_refs": [
+        "context",
+        "statement",
+        "subjects"
+      ],
+      "agree": true
+    },
+    {
+      "row_id": 1267,
+      "statement": "On using the Strategic Petroleum Reserve.",
+      "label": 0,
+      "pred": 1,
+      "base_prob": 1.0,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.5,
+          "delta": 0.5,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 1.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.0,
+          "delta": 1.0,
+          "flip": 1
+        },
+        "statement_context": {
+          "prob": 0.5,
+          "delta": 0.5,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.5,
+          "delta": 0.5,
+          "flip": 0
+        }
+      },
+      "driver": "subjects",
+      "rationale": "The provided text contains no factual claim to verify.",
+      "rationale_refs": [
+        "statement"
+      ],
+      "agree": false
+    },
+    {
+      "row_id": 7920,
+      "statement": "Says Rick Scott signed laws requiring mandatory ultrasounds and restricting access to abortion even in cases of rape or incest.",
+      "label": 1,
+      "pred": 1,
+      "base_prob": 1.0,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.9,
+          "delta": 0.1,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 1.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 1.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 1.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 1.0,
+          "delta": 0.0,
+          "flip": 0
+        }
+      },
+      "driver": "speaker_name",
+      "rationale": "Rick Scott signed legislation in 2011 that mandated ultrasounds and restricted abortion access, though the specific restrictions on rape and incest were later overturned by courts.",
+      "rationale_refs": [
+        "statement",
+        "subjects"
+      ],
+      "agree": false
+    },
+    {
+      "row_id": 4223,
+      "statement": "Says Sen. Kay Bailey Hutchison took 154 private flights all funded by taxpayers though commercial flights were readily available at a fraction of the cost.",
+      "label": 1,
+      "pred": 1,
+      "base_prob": 0.6,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.2,
+          "delta": 0.4,
+          "flip": 1
+        },
+        "speaker_affiliation": {
+          "prob": 0.4,
+          "delta": 0.2,
+          "flip": 1
+        },
+        "subjects": {
+          "prob": 0.6,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 0.85,
+          "delta": -0.25,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.85,
+          "delta": -0.25,
+          "flip": 0
+        }
+      },
+      "driver": "speaker_name",
+      "rationale": "The claim is false because the flights were funded by the Senate, not taxpayers directly, and the number of flights was significantly lower than 154.",
+      "rationale_refs": [
+        "statement"
+      ],
+      "agree": false
+    },
+    {
+      "row_id": 2591,
+      "statement": "The unemployment rate for folks whove never gone to college is almost double what it is for those who have.",
+      "label": 1,
+      "pred": 1,
+      "base_prob": 0.9,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.9,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 0.9,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.9,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 0.9,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.85,
+          "delta": 0.05,
+          "flip": 0
+        }
+      },
+      "driver": "statement",
+      "rationale": "Labor statistics consistently show a significant gap in unemployment rates between individuals with and without college degrees.",
+      "rationale_refs": [
+        "statement"
+      ],
+      "agree": true
+    },
+    {
+      "row_id": 3428,
+      "statement": "The federal government is sending refugees to states with governors who are Republicans, not to the Democrats.",
+      "label": 0,
+      "pred": 0,
+      "base_prob": 0.0,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 0.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 0.0,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.0,
+          "delta": 0.0,
+          "flip": 0
+        }
+      },
+      "driver": "statement",
+      "rationale": "Federal government refugee resettlement is based on agency contracts with local organizations rather than the political affiliation of state governors.",
+      "rationale_refs": [
+        "affiliation"
+      ],
+      "agree": false
+    },
+    {
+      "row_id": 5373,
+      "statement": "The McCain campaign did not elaborate on Obama's ties to ACORN.",
+      "label": 0,
+      "pred": 1,
+      "base_prob": 0.85,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.85,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 0.85,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.85,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 1.0,
+          "delta": -0.15,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 1.0,
+          "delta": -0.15,
+          "flip": 0
+        }
+      },
+      "driver": "statement_context",
+      "rationale": "The McCain campaign actively highlighted and criticized Obama's ties to ACORN during the 2008 election.",
+      "rationale_refs": [
+        "context"
+      ],
+      "agree": true
+    },
+    {
+      "row_id": 8377,
+      "statement": "(President Barack Obama) said unemployment was never gonna go over 8 percent if we passed the stimulus plan.",
+      "label": 0,
+      "pred": 0,
+      "base_prob": 0.2,
+      "occlusion": {
+        "speaker_name": {
+          "prob": 0.2,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "speaker_affiliation": {
+          "prob": 0.2,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "subjects": {
+          "prob": 0.2,
+          "delta": 0.0,
+          "flip": 0
+        },
+        "statement_context": {
+          "prob": 0.1,
+          "delta": 0.1,
+          "flip": 0
+        },
+        "all_metadata": {
+          "prob": 0.15,
+          "delta": 0.05,
+          "flip": 0
+        }
+      },
+      "driver": "statement_context",
+      "rationale": "President Obama never made a specific claim that unemployment would not exceed 8 percent if the stimulus plan was passed.",
+      "rationale_refs": [
+        "context",
+        "statement",
+        "subjects"
+      ],
+      "agree": true
+    }
+  ]
+}

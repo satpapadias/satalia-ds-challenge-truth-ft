@@ -1,0 +1,22 @@
+# --- Local-only / excluded from submission ---
+notebooks/
+.ipynb_checkpoints/
+CLAUDE.md
+.claude/
+contradictions.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Env / editor ---
+.venv/
+venv/
+.env
+.DS_Store
+.vscode/
+
+# --- Archives / data (do not redistribute) ---
+*.zip

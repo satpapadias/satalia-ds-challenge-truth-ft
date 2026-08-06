@@ -1,0 +1,18 @@
+{
+  "train_file_id": "file-5758cfff-3db5-4b0e-98ce-e71e0c3e248f",
+  "val_file_id": "file-d590347f-e739-49e0-b36c-bee6613eb15f",
+  "job_config": {
+    "model": "google/gemma-4-31B-it",
+    "training_file": "file-5758cfff-3db5-4b0e-98ce-e71e0c3e248f",
+    "validation_file": "file-d590347f-e739-49e0-b36c-bee6613eb15f",
+    "n_evals": 10,
+    "lora": true,
+    "n_epochs": 3,
+    "learning_rate": 1e-05,
+    "train_on_inputs": "auto",
+    "suffix": "gemma_truth_sft"
+  },
+  "job_id": "ft-164d480e-cf7f",
+  "output_name": null,
+  "model_output_name": "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d"
+}
