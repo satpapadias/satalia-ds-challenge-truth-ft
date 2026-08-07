@@ -31,20 +31,31 @@ def hr(title):
 
 
 def _check_file(path):
-    """Locate check_file across SDK versions; return its report or None."""
+    """Locate the SDK's check_file across versions and run it.
+
+    Returns (report, note). `report` is None only if no known import path
+    exposes check_file; `note` then explains which paths were tried and why each
+    failed. Callers must surface that — this used to `except Exception: continue`
+    and return None, so a validation step that never ran looked identical to one
+    that passed.
+    """
+    attempts = []
     for modname in ("together.lib.utils.files", "together.lib.utils",
                     "together.utils"):
         try:
             mod = __import__(modname, fromlist=["check_file"])
-            return mod.check_file(path)
-        except Exception:
-            continue
-    return None
+            return mod.check_file(path), None
+        except (ImportError, AttributeError) as e:
+            attempts.append(f"{modname}: {type(e).__name__}")
+    return None, "check_file not found (tried " + "; ".join(attempts) + ")"
 
 
 def _upload(client, path):
-    report = _check_file(path)
-    if report is not None and not report.get("is_check_passed", True):
+    report, note = _check_file(path)
+    if report is None:
+        # Not fatal: the server re-validates on upload(check=True). But say so.
+        print(f"  !! SDK-side validation SKIPPED for {path} -- {note}", flush=True)
+    elif not report.get("is_check_passed", True):
         raise SystemExit(f"check_file failed for {path}: {report}")
     resp = client.files.upload(file=path, purpose="fine-tune", check=True)
     fid = resp.id

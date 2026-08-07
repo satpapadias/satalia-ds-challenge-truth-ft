@@ -6,6 +6,8 @@ import math
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from truthclf import metrics as M  # noqa: E402
 
@@ -113,6 +115,25 @@ def test_bootstrap_bundle_brackets_point():
     out = M.bootstrap_bundle(yt, yp, pb, n_boot=200, seed=0)
     for k, (pt, lo, hi) in out.items():
         assert lo <= pt + 1e-9 and pt <= hi + 1e-9, k
+
+
+def test_bootstrap_ci_propagates_metric_errors():
+    """A bug in metric_fn must surface, not be silently counted as a degenerate
+    resample. This used to sit behind `except Exception: continue`."""
+    def broken(*_):
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        M.bootstrap_ci(broken, [1, 0, 1], [1, 0, 0], n_boot=10)
+
+
+def test_bootstrap_ci_warns_when_resamples_are_dropped():
+    """Single-class data makes roc_auc NaN on every draw: the interval must not
+    quietly come back as a confident one."""
+    yt = [1] * 8
+    with pytest.warns(RuntimeWarning, match="returned NaN"):
+        point, lo, hi = M.bootstrap_ci(M.roc_auc, yt, [0.1, 0.9] * 4, n_boot=20)
+    assert math.isnan(lo) and math.isnan(hi)
 
 
 def test_mcnemar_exact_pvalue():

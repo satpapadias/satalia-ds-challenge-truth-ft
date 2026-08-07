@@ -14,6 +14,8 @@ a real-valued / [0,1] confidence that the label is 1 (True).
 from __future__ import annotations
 
 import math
+import warnings
+
 import numpy as np
 
 EPS = 1e-12
@@ -170,7 +172,16 @@ def ece(y_true, y_prob, n_bins=10) -> float:
 # ---------------------------------------------------------------------------
 def bootstrap_ci(metric_fn, *arrays, n_boot=1000, alpha=0.05, seed=0):
     """Percentile bootstrap CI for a metric over paired arrays.
-    Returns (point_estimate, lo, hi). `metric_fn` takes the arrays in order."""
+
+    Returns (point_estimate, lo, hi). `metric_fn` takes the arrays in order.
+
+    A resample that yields NaN (e.g. a draw with one class absent, so AUC is
+    undefined) is dropped and counted; if that happens the interval is computed
+    over fewer than n_boot draws and a warning names the count, because a
+    quietly narrowed interval looks exactly like a confident one. Exceptions are
+    NOT caught: `except Exception: continue` here silently discarded genuine
+    bugs in metric_fn as if they were degenerate draws.
+    """
     arrays = [np.asarray(a) for a in arrays]
     n = len(arrays[0])
     rng = np.random.default_rng(seed)
@@ -178,15 +189,19 @@ def bootstrap_ci(metric_fn, *arrays, n_boot=1000, alpha=0.05, seed=0):
     stats = []
     for _ in range(n_boot):
         idx = rng.integers(0, n, size=n)
-        try:
-            stats.append(float(metric_fn(*[a[idx] for a in arrays])))
-        except Exception:
-            continue
-    stats = np.array([s for s in stats if not math.isnan(s)])
-    if len(stats) == 0:
+        stats.append(float(metric_fn(*[a[idx] for a in arrays])))
+    kept = np.array([s for s in stats if not math.isnan(s)])
+    n_dropped = len(stats) - len(kept)
+    if n_dropped:
+        warnings.warn(
+            f"bootstrap_ci: {n_dropped}/{n_boot} resamples returned NaN and were "
+            f"dropped; the interval is computed over {len(kept)} draws.",
+            RuntimeWarning, stacklevel=2,
+        )
+    if len(kept) == 0:
         return point, float("nan"), float("nan")
-    lo = float(np.percentile(stats, 100 * alpha / 2))
-    hi = float(np.percentile(stats, 100 * (1 - alpha / 2)))
+    lo = float(np.percentile(kept, 100 * alpha / 2))
+    hi = float(np.percentile(kept, 100 * (1 - alpha / 2)))
     return point, lo, hi
 
 

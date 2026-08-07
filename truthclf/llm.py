@@ -15,6 +15,7 @@ import json
 import math
 import os
 import time
+import warnings
 
 # USD per 1,000,000 tokens. Verified 2026-06-22 from together.ai pricing.
 PRICING = {
@@ -65,11 +66,21 @@ try:
         return len(_ENC.encode(text))
 
     TOKENIZER = "tiktoken/o200k_base (approx for Llama/GPT-OSS)"
-except Exception:
+except Exception as _tiktoken_error:             # noqa: F841 - reported below
+    # tiktoken is a declared dependency, so this branch means a broken install or
+    # (most likely) no network for the BPE download. Falling back silently would
+    # change every printed cost estimate by an unknown factor, so it warns loudly.
+    warnings.warn(
+        f"tiktoken unavailable ({type(_tiktoken_error).__name__}: {_tiktoken_error}); "
+        "falling back to a ~4-chars/token heuristic. COST ESTIMATES ARE APPROXIMATE "
+        "and may be off by tens of percent.",
+        RuntimeWarning, stacklevel=2,
+    )
+
     def count_tokens(text: str) -> int:
         return math.ceil(len(text) / 4)
 
-    TOKENIZER = "heuristic (~4 chars/token)"
+    TOKENIZER = "heuristic (~4 chars/token) - tiktoken unavailable"
 
 
 def estimate_cost(n_input_tokens: int, n_output_tokens: int, model: str) -> float:
