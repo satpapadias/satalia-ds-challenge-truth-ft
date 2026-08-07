@@ -57,13 +57,24 @@ explanations.
 
 ## Install
 
-Requires **Python 3.9+** (developed/tested on 3.9.6) and a recent **pip ≥ 21.3**
-(for editable installs):
+Requires **Python ≥ 3.12** (developed and tested on **3.12.13**). Dependencies are
+locked in `uv.lock`; [uv](https://docs.astral.sh/uv/) is the supported installer:
 
 ```bash
-python3 -m pip install --upgrade pip     # if your pip is older than 21.3
-python3 -m pip install -e .          # installs the truthclf package + dependencies
-python3 -m pip install -e ".[viz,dev]"   # optional: matplotlib (plots) + pytest
+uv venv --python 3.12          # creates .venv with the pinned interpreter
+uv sync --extra viz --extra dev   # installs exactly what uv.lock specifies
+```
+
+`uv sync` installs the package itself in editable mode, so `import truthclf`
+works from the project root. Run everything through the venv (`.venv/bin/python`,
+or `source .venv/bin/activate` first).
+
+Plain pip also works if you do not want uv, but it resolves dependencies fresh
+rather than using the lockfile:
+
+```bash
+python3.12 -m venv .venv && source .venv/bin/activate
+python3 -m pip install -e ".[viz,dev]"
 ```
 
 Set your Together API key in a project-root `.env` (loaded automatically):
@@ -72,8 +83,13 @@ Set your Together API key in a project-root `.env` (loaded automatically):
 TOGETHER_API_KEY=your_key_here
 ```
 
-Tested dependency versions: numpy 2.0.2, together 2.9.0, tiktoken 0.13.0,
-python-dotenv, pandas 2.3.3, matplotlib 3.9.4.
+Locked versions (see `uv.lock` for the full graph): Python 3.12.13, numpy 2.5.1,
+scikit-learn 1.9.0, scipy 1.18.0, statsmodels 0.14.6, pandas 3.0.5,
+together 2.30.0, tiktoken 0.13.0, python-dotenv, matplotlib.
+
+scikit-learn, scipy and statsmodels are **required, not optional**: the metrics,
+calibration, threshold-tuning and splitting code defers to their reference
+implementations instead of hand-rolling numerical routines.
 
 ---
 
@@ -85,9 +101,9 @@ All); it renders the recorded results and makes no API calls.
 **To run live** (all commands from the project root):
 
 ```bash
-# 1. setup
-python3 -m venv .venv && source .venv/bin/activate
-python3 -m pip install --upgrade pip && python3 -m pip install -e .
+# 1. setup (Python 3.12; see Install above)
+uv venv --python 3.12 && source .venv/bin/activate
+uv sync --extra viz --extra dev
 printf 'TOGETHER_API_KEY=YOUR_KEY\n' > .env      # your own key
 ls data.csv                                       # confirm the dataset is present
 

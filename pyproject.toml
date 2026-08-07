@@ -7,13 +7,19 @@ name = "truthclf"
 version = "0.1.0"
 description = "Binary truthfulness classification of public statements: zero-shot + fine-tuned predictors and a faithfulness-aware explainer."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Satalia DS Challenge submission" }]
 
 # Floors match the versions this was developed and tested against (see README).
+# scikit-learn / scipy / statsmodels are first-class dependencies, not optional:
+# the metrics, calibration, threshold and split code defers to their reference
+# implementations rather than hand-rolling numerical routines.
 dependencies = [
-    "numpy>=1.24",
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "scipy>=1.14",
+    "statsmodels>=0.14",
     "together>=2.0",
     "tiktoken>=0.7",
     "python-dotenv>=1.0",
