@@ -1,20 +1,31 @@
 """Post-hoc probability calibration for binary predictions.
 
-The zero-shot probability is score/100, which is uncalibrated. We fit a
-calibrator on the validation split only and apply it to the test split.
+The zero-shot probability is score/100 (or a logprob softmax), which is
+uncalibrated. We fit a calibrator on the validation split only and apply it to
+the test split.
 
 Two calibrators, both operating on the logit of the raw probability:
   - temperature scaling: p_cal = sigmoid(logit(p) / T)        (1 parameter)
   - Platt scaling:        p_cal = sigmoid(A * logit(p) + B)    (2 parameters)
 
-fit_best picks whichever gives lower validation NLL. Pure numpy.
+fit_best picks whichever gives lower validation NLL.
+
+Both fits are delegated to reference optimisers — scipy for the 1-D bounded
+search, scikit-learn's logistic regression for Platt — rather than a hand-rolled
+grid and a fixed-step gradient loop.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy.optimize import minimize_scalar
+from sklearn.linear_model import LogisticRegression
 
 EPS = 1e-6
+
+# Temperature is searched on this interval. Bounded rather than unconstrained so
+# a degenerate validation set cannot drive T to 0 or infinity.
+T_BOUNDS = (0.05, 10.0)
 
 
 def _logit(p):
@@ -33,31 +44,41 @@ def _nll(p, y):
 
 
 def fit_temperature(probs, labels):
-    """1-D search for the temperature T minimising validation NLL."""
+    """Fit the temperature T minimising validation NLL.
+
+    Uses scipy's bounded Brent search. The previous version scanned 400 points
+    of linspace(0.05, 10.0), quantising T to steps of ~0.025 and reporting a
+    grid point rather than the optimum.
+    """
     z = _logit(probs)
     y = np.asarray(labels, dtype=float)
-    best_T, best = 1.0, float("inf")
-    for T in np.linspace(0.05, 10.0, 400):
-        nll = _nll(_sigmoid(z / T), y)
-        if nll < best:
-            best, best_T = nll, T
-    return {"method": "temperature", "T": float(best_T)}
+    res = minimize_scalar(lambda T: _nll(_sigmoid(z / T), y),
+                          bounds=T_BOUNDS, method="bounded")
+    if not res.success:
+        raise RuntimeError(f"temperature fit did not converge: {res.message}")
+    return {"method": "temperature", "T": float(res.x)}
 
 
-def fit_platt(probs, labels, iters=2000, lr=0.5):
-    """Gradient-descent fit of A, B for Platt scaling (logistic on the logit)."""
-    z = _logit(probs)
-    y = np.asarray(labels, dtype=float)
-    n = len(y)
-    A, B = 1.0, 0.0
-    for _ in range(iters):
-        p = _sigmoid(A * z + B)
-        g = p - y
-        gA = float(np.mean(g * z))
-        gB = float(np.mean(g))
-        A -= lr * gA
-        B -= lr * gB
-    return {"method": "platt", "A": float(A), "B": float(B)}
+def fit_platt(probs, labels):
+    """Fit A, B for Platt scaling: a logistic regression on the logit.
+
+    Turning regularisation OFF is essential and deliberate. Platt scaling is a
+    maximum-likelihood fit of two parameters; scikit-learn's LogisticRegression
+    defaults to L2 with C=1.0, which would shrink A toward 0 and quietly flatten
+    the calibration curve. A regularised fit here looks completely correct and is
+    a worse bug than the fixed-step gradient descent it replaces, which at least
+    failed visibly by not converging.
+
+    C=np.inf rather than penalty=None: `penalty` is deprecated in scikit-learn
+    1.8 and removed in 1.10, and C=np.inf is the documented replacement for "no
+    regularisation". Pinned by tests/test_calibration.py, which recovers known
+    (A, B) from synthetic data and would fail if the fit were shrunk.
+    """
+    z = _logit(probs).reshape(-1, 1)
+    y = np.asarray(labels, dtype=int)
+    lr = LogisticRegression(C=np.inf, solver="lbfgs", max_iter=1000)
+    lr.fit(z, y)
+    return {"method": "platt", "A": float(lr.coef_[0][0]), "B": float(lr.intercept_[0])}
 
 
 def apply(probs, params):
