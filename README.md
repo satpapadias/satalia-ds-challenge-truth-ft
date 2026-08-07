@@ -18,18 +18,29 @@ and LoRA fine-tuning).
 All numbers are **calibrated** (Platt scaling + decision threshold fit on a
 separate validation split, reported on the untouched test split).
 
-| Predictor | Accuracy | Balanced acc | Macro-F1 | Brier | ECE |
+| Predictor | Accuracy | Balanced acc | Macro-F1 | Brier | ECE (bins occupied) |
 |---|---|---|---|---|---|
-| Zero-shot, decision/logprob (baseline) | 0.668 | 0.662 | 0.662 | 0.217 | 0.053 |
-| **Fine-tuned (LoRA SFT), decision** | **0.701** | **0.695** | **0.696** | **0.201** | **0.027** |
-| Zero-shot, score-mode (secondary) | 0.700 | 0.699 | 0.699 | 0.225 | 0.117 |
+| Zero-shot, decision/logprob (baseline) | 0.668 | 0.662 | 0.663 | 0.218 | 0.061 (9/10) |
+| **Fine-tuned (LoRA SFT), decision** | **0.699** | **0.694** | **0.694** | **0.203** | 0.052 (10/10) |
+| Zero-shot, score-mode (secondary) | 0.700 | 0.699 | 0.699 | 0.227 | 0.108 (7/10) |
 
-**Clean fine-tuning effect** (fine-tuned vs *matched* zero-shot, same elicitation):
-accuracy **+0.033 [+0.021, +0.045]**, McNemar **p < 0.001** — a modest but
-**statistically significant** gain, with calibration more than halved
-(**ECE 0.053 → 0.027**). Hosted LLMs are mildly non-deterministic even at
-temperature 0, so numbers vary slightly run-to-run; the fine-tuning effect was
-consistently positive and significant across runs (+0.017 to +0.033).
+**Fine-tuning buys accuracy.** Against the *matched* zero-shot baseline (same
+elicitation, same split, same calibration): accuracy **+0.031 [+0.019, +0.043]**,
+McNemar exact **p = 6.3e-07**. Modest and unambiguously significant.
+
+**Fine-tuning does not buy calibration.** The ECE difference against the same
+baseline is **+0.0097 [−0.0057, +0.0270]** — a paired bootstrap interval that
+straddles zero. We do not claim a calibration improvement.
+
+**Post-hoc calibration is what buys confidence quality, and it is load-bearing.**
+On the zero-shot baseline, ECE goes **0.316 → 0.061**, a reduction of
+**+0.255 [+0.213, +0.279]** with non-overlapping intervals. The raw elicited
+probabilities are close to useless as confidences; the calibrated ones are not.
+
+These are two separate contributions with separate evidence: **fine-tuning →
+accuracy**, **calibration → confidence quality**. Neither substitutes for the
+other. Hosted LLMs are mildly non-deterministic even at temperature 0; a live
+refetch of the same prompts reproduced these to within 0.003 on every metric.
 
 **Context:** accuracy on this task is inherently bounded well below 100% —
 verifying short factual claims requires external world knowledge, and the human
@@ -41,17 +52,18 @@ controlled, well-calibrated evaluation rather than chasing raw accuracy.
 
 The task is hard and ceiling-bound (~0.62–0.69 in the literature), so the value is
 in *honest* evaluation, not chasing accuracy. Using a leakage-controlled split
-(speaker-disjoint + near-duplicate dedup) and proper calibration, the zero-shot
-decision baseline reaches 0.668 / ECE 0.053. Fine-tuning yields a CI-backed,
-significant improvement over the matched zero-shot baseline (+0.033, p < 0.001)
-and more than halves calibration error. The explainer (leave-one-field-out
-occlusion) shows the model leans on a **speaker shortcut** (speaker identity is
-the deciding input for ~27% of predictions and its removal flips ~8%), and
-crucially that this shortcut **hurts**: predictions driven by the statement
-content are right 75.2% of the time versus 62.5% when driven by the speaker. The
-model's free-text rationales agree with the occlusion-identified driver only ~46%
-of the time, i.e. they are often post-hoc rationalizations rather than faithful
-explanations.
+(speaker-disjoint + repeated-statement dedup) and post-hoc calibration, the
+zero-shot decision baseline reaches 0.668 / ECE 0.061. Fine-tuning yields a
+CI-backed, significant accuracy gain over the matched zero-shot baseline
+(+0.031, p = 6.3e-07) but **no measurable calibration gain**; calibration itself
+is what makes the probabilities usable (ECE 0.316 → 0.061). The explainer
+(leave-one-field-out occlusion) shows the model leans on a **speaker shortcut**
+(speaker identity is the deciding input for ~26% of predictions and its removal
+flips ~10%), and crucially that this shortcut **hurts**: predictions driven by
+the statement content are right 74.1% of the time versus 56.4% when driven by
+the speaker. The model's free-text rationales agree with the occlusion-identified
+driver only ~46% of the time, i.e. they are often post-hoc rationalizations
+rather than faithful explanations.
 
 ---
 
@@ -108,7 +120,7 @@ printf 'TOGETHER_API_KEY=YOUR_KEY\n' > .env      # your own key
 ls data.csv                                       # confirm the dataset is present
 
 # 2. zero-shot logprob baseline on the test split (serverless, ~cents)
-python3 scripts/zeroshot_baseline.py              # expect ~0.668 acc / ECE ~0.053
+python3 scripts/zeroshot_baseline.py              # expect ~0.668 acc / ECE ~0.061
 
 # 3. explainer: occlusion + rationale + cross-check (serverless, ~cents)
 python3 scripts/run_explainer.py
@@ -128,11 +140,13 @@ variation is normal — the trends are what matter):
 
 | Result | Expected |
 |---|---|
-| zero-shot, logprob (test) | acc ~0.668, ECE ~0.053 |
-| fine-tuned, logprob (test) | acc ~0.701, ECE ~0.027 |
-| paired fine-tuning effect | Δacc ~+0.033, McNemar p < 0.001 |
+| zero-shot, logprob (test) | acc ~0.668, ECE ~0.061 (equal-mass, 9 bins) |
+| fine-tuned, logprob (test) | acc ~0.699, ECE ~0.052 (equal-mass, 10 bins) |
+| paired fine-tuning effect | Δacc ~+0.031, McNemar p ~1e-6 |
+| paired calibration effect | ΔECE ~+0.010, CI straddles zero — **no effect** |
+| calibration vs raw probabilities | ECE ~0.316 → ~0.061 |
 | explainer faithfulness | rationale↔occlusion agreement ~0.46 |
-| driver vs correctness | statement-driven (~0.75) > speaker-driven (~0.63) |
+| driver vs correctness | statement-driven (~0.74) > speaker-driven (~0.56) |
 
 ---
 
@@ -209,17 +223,43 @@ with bootstrap CIs, and a sensitivity check that moves `half-true → False`.
 **Leakage control.** A handful of speakers dominate the data and non-person
 "speakers" (chain-email, viral-image) skew heavily False, so a naive random split
 leaks. We use a **speaker-disjoint** split (no speaker in both train and test) plus
-**near-duplicate dedup** via union-find (identical/near-identical statements never
-cross the split), and we **drop self-contradictory duplicate groups** (same text,
-conflicting binary label). We report the speaker-disjoint result as primary; the
+**repeated-statement dedup** (statements identical after normalisation never
+cross the split — this is exact match after normalisation, not fuzzy matching),
+and we **drop self-contradictory repeat groups** (same text, conflicting binary
+label). We report the speaker-disjoint result as primary; the
 gap to a stratified split estimates speaker memorization.
 
-**Calibration & thresholds.** The raw 0–100 score is uncalibrated, so we fit a
-post-hoc calibrator (Platt) and a decision threshold on validation only, then
-report on test — this roughly halves ECE without changing accuracy. A
-cost-sensitive threshold is provided because, in a misinformation setting, labelling
-a false statement as True (a false positive in this 1=True encoding) is the costlier
-error.
+**Calibration & thresholds.** The raw elicited probability is badly uncalibrated
+(ECE 0.316 on the zero-shot baseline), so we fit a post-hoc calibrator and a
+decision threshold on validation only, then report on test. This is the largest
+single improvement in the whole pipeline: ECE 0.316 → 0.061, +0.255 [+0.213,
++0.279]. Accuracy is essentially unchanged — calibration buys confidence quality,
+not correctness. A cost-sensitive threshold is provided because, in a
+misinformation setting, labelling a false statement as True (a false positive in
+this 1=True encoding) is the costlier error.
+
+*Calibrator selection.* Temperature scaling (1 parameter) and Platt scaling (2)
+are both fitted on validation and chosen by **validation NLL**, a proper scoring
+rule. Platt is selected only if a paired bootstrap of the NLL difference excludes
+zero; otherwise the simpler model is kept on parsimony grounds. **The selection
+target and the reported calibration metric are not the same quantity, and we say
+so explicitly:** selection optimises NLL, but the resulting calibrators are
+*statistically indistinguishable on ECE* — on all three runs the paired CI for
+ECE(temperature) − ECE(Platt) includes zero. We do not select on validation ECE,
+because a criterion that cannot separate the candidates on test at n≈2000 is
+noisier still on validation, and selecting on it would be selecting on noise.
+
+*ECE methodology.* Reported ECE uses **equal-mass (quantile) bins**, and every
+ECE ships with the number of bins actually occupied. Equal-width bins are
+structurally unusable here: confidence-of-predicted-class lives in [0.5, 1], so
+half of a [0,1] grid can never be occupied, and on these runs only 2–3 of 10
+equal-width bins carried any mass. That flatters the estimate by hiding
+miscalibration inside one large bin — on the score-mode run, equal-width reports
+ECE 0.065 from 2 occupied bins where equal-mass reports 0.108 from 7. The
+equal-width figure is retained as a diagnostic under `ece_detail.uniform` in the
+results files. Ties can still collapse quantile edges, which is why the realised
+bin count is always reported alongside: a 2-bin and a 10-bin ECE are not
+comparable quantities.
 
 **Fine-tuning.** LoRA supervised fine-tuning on Together (`gpt-4o-mini`/OpenAI was
 not viable — deprecated and fine-tuning closed to new users). Serverless serving of

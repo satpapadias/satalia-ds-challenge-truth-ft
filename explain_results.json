@@ -38,17 +38,37 @@
     "n": 300
   },
   "metrics": {
-    "accuracy": 0.6833333333333333,
-    "balanced_accuracy": 0.6824729891956738,
-    "macro_f1": 0.6823132057379229,
-    "precision_True": 0.6768292682926789,
-    "recall_True": 0.7254901960784267,
-    "precision_False": 0.6911764705882303,
-    "recall_False": 0.6394557823129209,
-    "roc_auc": 0.6811835845449291,
-    "pr_auc": 0.6277044927037583,
-    "brier": 0.2705,
-    "ece": 0.2053333333333334
+    "accuracy": 0.67,
+    "balanced_accuracy": 0.6692677070828332,
+    "macro_f1": 0.6691729323308271,
+    "precision_True": 0.6666666666666666,
+    "recall_True": 0.7058823529411765,
+    "precision_False": 0.6739130434782609,
+    "recall_False": 0.6326530612244898,
+    "roc_auc": 0.676203814859277,
+    "pr_auc": 0.6244379448076062,
+    "brier": 0.275125,
+    "ece": 0.20883333333333345,
+    "ece_detail": {
+      "quantile": {
+        "ece": 0.20883333333333345,
+        "ci": [
+          0.1735000000000001,
+          0.27667083333333337
+        ],
+        "bins_occupied": 5,
+        "bins_realised": 5
+      },
+      "uniform": {
+        "ece": 0.20883333333333343,
+        "ci": [
+          0.1686625,
+          0.2716833333333333
+        ],
+        "bins_occupied": 5,
+        "bins_realised": 10
+      }
+    }
   },
   "examples": [
     {
@@ -376,5 +396,11 @@
       ],
       "agree": true
     }
-  ]
+  ],
+  "_provenance": {
+    "source_runs": "archive replay (schema-1, untouched)",
+    "source_explainer": "live (schema-2 cache, batch backend)",
+    "n_boot": 2000,
+    "ece_default_binning": "quantile (equal-mass)"
+  }
 }
