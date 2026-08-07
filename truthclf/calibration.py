@@ -90,12 +90,62 @@ def apply(probs, params):
     raise ValueError(f"unknown calibrator: {params.get('method')!r}")
 
 
-def fit_best(probs, labels):
-    """Fit both calibrators on (probs, labels); return the lower-val-NLL one."""
+def nll_difference_ci(probs, labels, n_boot=1000, seed=0, alpha=0.05):
+    """Paired bootstrap CI for (temperature NLL - Platt NLL) on the fitting set.
+
+    Positive means Platt fits better. BOTH calibrators are REFITTED on each
+    resample and scored on that same resample, which mirrors exactly what
+    fit_best does — the question is "would this selection flip on another
+    validation draw of this size", not "how noisy is a fixed pair of fits".
+
+    Returns (point, lo, hi).
+    """
+    probs = np.asarray(probs, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    n = len(labels)
+    rng = np.random.default_rng(seed)
+
+    def diff(p, y):
+        yf = y.astype(float)
+        return (_nll(apply(p, fit_temperature(p, y)), yf)
+                - _nll(apply(p, fit_platt(p, y)), yf))
+
+    point = diff(probs, labels)
+    draws = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        y = labels[idx]
+        if y.min() == y.max():          # Platt is undefined on one class
+            continue
+        draws.append(diff(probs[idx], y))
+    lo, hi = np.percentile(draws, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(point), float(lo), float(hi)
+
+
+def fit_best(probs, labels, n_boot=1000, seed=0, alpha=0.05):
+    """Fit both calibrators; return Platt ONLY if it beats temperature by a
+    margin that survives a paired bootstrap of the validation NLL difference.
+
+    PARSIMONY RULE: temperature scaling has one parameter, Platt has two. When
+    the CI for (temperature NLL - Platt NLL) includes zero, the data does not
+    distinguish them and the simpler model is kept. The rule is stated in terms
+    of parameter count, decided before looking at which calibrator it favours.
+
+    Motivation: raw NLL comparison selected Platt on a 0.3% margin on one run
+    and paid 0.016 test ECE for it. Selecting on an unquantified margin is how
+    a calibration choice becomes noise-fitting.
+
+    The returned dict carries `val_nll`, `nll_diff_ci` and `selected_by`
+    ("margin" when Platt won outright, "parsimony" when the tie-break applied).
+    """
     y = np.asarray(labels, dtype=float)
-    cands = [fit_temperature(probs, labels), fit_platt(probs, labels)]
-    scored = [(p, _nll(apply(probs, p), y)) for p in cands]
-    scored.sort(key=lambda t: t[1])
-    best = scored[0][0]
-    best["val_nll"] = scored[0][1]
+    temp = fit_temperature(probs, labels)
+    platt = fit_platt(probs, labels)
+    point, lo, hi = nll_difference_ci(probs, labels, n_boot=n_boot, seed=seed, alpha=alpha)
+
+    platt_wins = lo > 0.0                 # CI strictly above zero
+    best = platt if platt_wins else temp
+    best["val_nll"] = _nll(apply(probs, best), y)
+    best["nll_diff_ci"] = (point, lo, hi)
+    best["selected_by"] = "margin" if platt_wins else "parsimony"
     return best

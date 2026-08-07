@@ -164,17 +164,48 @@ def test_reliability_curve_reports_empty_bins_sklearn_omits():
     assert len(frac_sk) == 1, "sklearn keeps only the occupied bin"
 
 
-def test_ece_bin_report_exposes_effective_resolution():
-    """The structural limit: confidence-of-predicted-class lives in [0.5, 1], so
-    with equal-width bins over [0,1] the lower half can never be occupied."""
+def test_uniform_bins_are_structurally_half_empty():
+    """The limit that motivated the switch: confidence-of-predicted-class lives
+    in [0.5, 1], so with equal-width bins over [0,1] the lower half can never be
+    occupied and 10 requested bins give at most 5."""
     rng = np.random.default_rng(5)
     p = rng.uniform(size=400)
     y = (rng.uniform(size=400) < p).astype(int)
-    rep = M.ece_bin_report(y, p, n_bins=10)
-    assert rep["n_bins"] == 10
+    rep = M.ece_bin_report(y, p, n_bins=10, strategy="uniform")
+    assert rep["n_bins_realised"] == 10
     assert rep["n_bins_occupied"] <= 5
     assert all(c == 0 for c in rep["count"][:5]), "bins below conf=0.5 are unreachable"
-    assert approx(rep["ece"], M.ece(y, p, n_bins=10), tol=1e-12)
+    assert approx(rep["ece"], M.ece(y, p, n_bins=10, strategy="uniform"), tol=1e-12)
+
+
+def test_quantile_bins_use_the_full_budget():
+    """Equal-mass bins put comparable weight in each bin instead of leaving half
+    of them structurally empty."""
+    rng = np.random.default_rng(5)
+    p = rng.uniform(size=400)
+    y = (rng.uniform(size=400) < p).astype(int)
+    rep = M.ece_bin_report(y, p, n_bins=10)                 # quantile is default
+    assert rep["strategy"] == "quantile"
+    assert rep["n_bins_occupied"] == 10
+    assert max(rep["count"]) - min(rep["count"]) <= 2, "bins should be near equal-mass"
+
+
+def test_quantile_bins_collapse_on_tied_confidences_and_say_so():
+    """Equal-mass binning cannot beat ties: with three distinct confidences the
+    realised bin count must drop, and the report must expose it."""
+    p = [0.9] * 40 + [0.7] * 40 + [0.6] * 40
+    y = [1] * 30 + [0] * 10 + [1] * 25 + [0] * 15 + [1] * 20 + [0] * 20
+    rep = M.ece_bin_report(y, p, n_bins=10)
+    assert rep["n_bins_requested"] == 10
+    assert rep["n_bins_realised"] < 10
+    assert rep["n_bins_occupied"] == rep["n_bins_realised"]
+
+
+def test_ece_default_strategy_is_quantile():
+    rng = np.random.default_rng(11)
+    p = rng.uniform(0.5, 1.0, 300)
+    y = (rng.uniform(size=300) < p).astype(int)
+    assert approx(M.ece(y, p), M.ece(y, p, strategy="quantile"), tol=1e-12)
 
 
 def test_bootstrap_ci_brackets_point():

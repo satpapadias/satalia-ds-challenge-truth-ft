@@ -153,44 +153,65 @@ def reliability_curve(y_true, y_prob, n_bins=10):
             "edges": edges.tolist()}
 
 
-def ece(y_true, y_prob, n_bins=10) -> float:
+def ece(y_true, y_prob, n_bins=10, strategy="quantile") -> float:
     """Expected Calibration Error using confidence of the predicted class.
 
+    DEFAULT IS EQUAL-MASS ("quantile") BINS. Equal-width bins are structurally
+    unusable here: confidence-of-predicted-class lives in [0.5, 1] for binary
+    classification, so the lower half of a [0, 1] equal-width grid can never be
+    occupied — and on this project's actual runs only 2-3 of 10 bins carry any
+    mass at all, because the models are consistently confident. Equal-mass bins
+    put comparable weight in each bin, so the estimate is not dominated by one
+    huge bin. Pass strategy="uniform" for the equal-width diagnostic.
+
+    Equal-mass binning cannot beat ties: heavily tied confidences collapse
+    quantile edges, so the realised bin count can be far below n_bins. ALWAYS
+    report `ece_bin_report(...)["n_bins_occupied"]` alongside an ECE — a
+    2-bin estimate and a 10-bin estimate are not comparable quantities.
+
     Kept hand-rolled: scikit-learn has no ECE, and torchmetrics/netcal are not
-    worth a dependency for 15 lines. Pinned in tests against an analytically
+    worth a dependency for 30 lines. Pinned in tests against an analytically
     known case and against calibration_curve's binning.
-
-    KNOWN RESOLUTION LIMIT: confidence-of-predicted-class lives in [0.5, 1] for
-    binary classification, but the bins are equal-width over [0, 1]. The lower
-    half is therefore structurally empty and the effective resolution is
-    n_bins/2, not n_bins — a caller asking for 10 bins gets 5. Use
-    `ece_bin_report` to see the occupancy directly.
     """
-    return _ece_bins(y_true, y_prob, n_bins)["ece"]
+    return _ece_bins(y_true, y_prob, n_bins, strategy)["ece"]
 
 
-def ece_bin_report(y_true, y_prob, n_bins=10) -> dict:
+def ece_bin_report(y_true, y_prob, n_bins=10, strategy="quantile") -> dict:
     """ECE plus the per-bin occupancy it was computed from.
 
-    Exists so the structural-empty-bin limit documented on `ece` is visible to
-    the caller instead of being folded into a bare float: `n_bins_occupied` vs
-    `n_bins` shows the effective resolution directly.
+    Exists so the resolution limit documented on `ece` is visible to the caller
+    instead of being folded into a bare float: `n_bins_occupied` vs `n_bins`
+    gives the effective resolution directly.
     """
-    return _ece_bins(y_true, y_prob, n_bins)
+    return _ece_bins(y_true, y_prob, n_bins, strategy)
 
 
-def _ece_bins(y_true, y_prob, n_bins) -> dict:
+def _bin_edges(conf, n_bins, strategy):
+    if strategy == "uniform":
+        return np.linspace(0.0, 1.0, n_bins + 1)
+    if strategy == "quantile":
+        # np.unique also sorts; duplicate quantiles (from tied confidences)
+        # collapse, which is why the realised bin count must be reported.
+        edges = np.unique(np.quantile(conf, np.linspace(0.0, 1.0, n_bins + 1)))
+        if edges.size < 2:                        # every confidence identical
+            edges = np.array([edges[0], np.nextafter(edges[0], np.inf)])
+        return edges
+    raise ValueError(f"unknown binning strategy: {strategy!r}")
+
+
+def _ece_bins(y_true, y_prob, n_bins, strategy) -> dict:
     yt, p = _arr(y_true), _arr(y_prob)
     pred = (p >= 0.5).astype(int)
     conf = np.where(pred == 1, p, 1.0 - p)        # confidence in predicted class
     correct = (pred == yt).astype(float)
-    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    edges = _bin_edges(conf, n_bins, strategy)
+    nb = len(edges) - 1
     n = len(yt)
     total = 0.0
     counts, gaps = [], []
-    for b in range(n_bins):
+    for b in range(nb):
         lo, hi = edges[b], edges[b + 1]
-        mask = (conf >= lo) & (conf < hi) if b < n_bins - 1 else (conf >= lo) & (conf <= hi)
+        mask = (conf >= lo) & (conf < hi) if b < nb - 1 else (conf >= lo) & (conf <= hi)
         k = int(np.sum(mask))
         counts.append(k)
         if k:
@@ -199,7 +220,8 @@ def _ece_bins(y_true, y_prob, n_bins) -> dict:
             total += (k / n) * gap
         else:
             gaps.append(float("nan"))
-    return {"ece": float(total), "n_bins": n_bins,
+    return {"ece": float(total), "strategy": strategy,
+            "n_bins_requested": n_bins, "n_bins_realised": nb,
             "n_bins_occupied": int(sum(1 for c in counts if c)),
             "count": counts, "gap": gaps, "edges": edges.tolist()}
 
