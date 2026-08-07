@@ -188,16 +188,6 @@ def calibrated_eval(vp, vy, tp, ty):
             "preds": preds.tolist(), "metrics": metrics.metric_bundle(ty, preds, tpc)}
 
 
-def boot_acc_diff(ty, pa, pb, n_boot=2000, seed=0):
-    ty, a, b = np.asarray(ty), np.asarray(pa), np.asarray(pb)
-    n = len(ty); rng = np.random.default_rng(seed)
-    point = float(np.mean(a == ty) - np.mean(b == ty))
-    d = [float(np.mean(a[i] == ty[i]) - np.mean(b[i] == ty[i]))
-         for i in (rng.integers(0, n, n) for _ in range(n_boot))]
-    lo, hi = np.percentile(d, [2.5, 97.5])
-    return point, float(lo), float(hi)
-
-
 def main():
     c = Together()
     clean, _ = data.clean_dataset(data.load("data.csv"), SCHEME)
@@ -226,11 +216,11 @@ def main():
               f"f1={m['macro_f1']:.3f} brier={m['brier']:.3f} ece={m['ece']:.3f}", flush=True)
 
     hr("PAIRED TESTS (test split, n=%d)" % len(test))
-    mc_cb = metrics.mcnemar(ty, C["preds"], B["preds"]); d_cb = boot_acc_diff(ty, C["preds"], B["preds"])
+    mc_cb = metrics.mcnemar(ty, C["preds"], B["preds"]); d_cb = metrics.paired_accuracy_diff(ty, C["preds"], B["preds"])
     print(f"  (c vs b) CLEAN fine-tuning effect: acc {d_cb[0]:+.3f} "
           f"[{d_cb[1]:+.3f},{d_cb[2]:+.3f}]  McNemar p={mc_cb['p_value']:.4f} "
           f"(b={mc_cb['b']},c={mc_cb['c']})", flush=True)
-    mc_ca = metrics.mcnemar(ty, C["preds"], A["preds"]); d_ca = boot_acc_diff(ty, C["preds"], A["preds"])
+    mc_ca = metrics.mcnemar(ty, C["preds"], A["preds"]); d_ca = metrics.paired_accuracy_diff(ty, C["preds"], A["preds"])
     print(f"  (c vs a) secondary cross-elicitation: acc {d_ca[0]:+.3f} "
           f"[{d_ca[1]:+.3f},{d_ca[2]:+.3f}]  McNemar p={mc_ca['p_value']:.4f}", flush=True)
 

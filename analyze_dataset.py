@@ -14,9 +14,16 @@ Reports:
 
 from __future__ import annotations
 
-import csv
 import collections
+import csv
+import os
 import statistics
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from truthclf.data import normalized_statement_key  # noqa: E402
 
 DATA_PATH = "data.csv"
 
@@ -62,21 +69,15 @@ def pct(n: int, total: int) -> str:
 
 
 def percentile(data: list, p: float) -> float:
-    """Linear-interpolation percentile (p in 0..100)."""
-    s = sorted(data)
-    if not s:
-        return 0.0
-    k = (len(s) - 1) * p / 100.0
-    lo = int(k)
-    hi = min(lo + 1, len(s) - 1)
-    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+    """Linear-interpolation percentile (p in 0..100). numpy's default method
+    ('linear') is exactly this; kept as a named wrapper for readability."""
+    return float(np.percentile(data, p)) if len(data) else 0.0
 
 
-def norm_statement(s: str) -> str:
-    """Normalization key for near-duplicate detection: lowercase, strip
-    punctuation, collapse whitespace. Catches re-punctuated / re-cased repeats."""
-    keep = [c.lower() if (c.isalnum() or c.isspace()) else " " for c in s]
-    return " ".join("".join(keep).split())
+# Statement grouping uses the SAME key as the package, imported rather than
+# re-implemented: this script's numbers must describe the data the splitter
+# actually sees. It previously carried its own copy, free to drift.
+norm_statement = normalized_statement_key
 
 
 def main() -> None:
@@ -147,7 +148,7 @@ def main() -> None:
     print("\n  Statements are short (mean ~18 words).")
 
     # ------------------------------------------------------------------
-    section("DUPLICATE / NEAR-DUPLICATE STATEMENTS")
+    section("REPEATED STATEMENTS (exact, and exact-after-normalisation)")
     # Exact duplicates (verbatim string match).
     stmt_rows = collections.defaultdict(list)
     for i, r in enumerate(rows):
@@ -161,16 +162,16 @@ def main() -> None:
     norm_rows = collections.defaultdict(list)
     for i, r in enumerate(rows):
         norm_rows[norm_statement(r["statement"])].append(i)
-    near_dup_groups = {s: idxs for s, idxs in norm_rows.items() if len(idxs) > 1}
-    n_near_dup_rows = sum(len(idxs) for idxs in near_dup_groups.values())
-    print(f"  Near-duplicate (normalized): {len(near_dup_groups)} groups "
-          f"covering {n_near_dup_rows} rows ({n_near_dup_rows/total*100:.1f}%)")
+    repeat_groups = {s: idxs for s, idxs in norm_rows.items() if len(idxs) > 1}
+    n_repeat_rows = sum(len(idxs) for idxs in repeat_groups.values())
+    print(f"  Repeats after normalisation: {len(repeat_groups)} groups "
+          f"covering {n_repeat_rows} rows ({n_repeat_rows/total*100:.1f}%)")
     print(f"    (extra rows caught by normalization only: "
-          f"{n_near_dup_rows - n_exact_dup_rows})")
+          f"{n_repeat_rows - n_exact_dup_rows})")
 
     # Conflicting labels within a duplicate group -> label noise.
     conflict_groups = []
-    for s, idxs in near_dup_groups.items():
+    for s, idxs in repeat_groups.items():
         lbls = {label_of(rows[i]) for i in idxs}
         if len(lbls) > 1:
             conflict_groups.append((s, idxs, lbls))
@@ -184,12 +185,12 @@ def main() -> None:
     # Cross-split risk: a duplicated statement spoken by >1 distinct speaker
     # would land on BOTH sides of a speaker-disjoint split -> leakage.
     crosssplit = 0
-    for s, idxs in near_dup_groups.items():
+    for s, idxs in repeat_groups.items():
         spk = {rows[i]["speaker_name"].strip() for i in idxs}
         if len(spk) > 1:
             crosssplit += 1
-    print(f"\n  Near-dup groups spanning >1 speaker (cross-split leak risk): {crosssplit}")
-    print("  -> dedup BEFORE splitting, and assign each near-dup group to ONE split side")
+    print(f"\n  Repeat groups spanning >1 speaker (cross-split leak risk): {crosssplit}")
+    print("  -> dedup BEFORE splitting, and assign each repeat group to ONE split side")
     print("     so identical text cannot leak across the speaker-disjoint train/test gap.")
 
     # ------------------------------------------------------------------

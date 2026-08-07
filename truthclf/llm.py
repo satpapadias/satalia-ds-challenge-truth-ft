@@ -17,6 +17,9 @@ import os
 import time
 import warnings
 
+from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
+                      wait_exponential_jitter)
+
 # USD per 1,000,000 tokens. Verified 2026-06-22 from together.ai pricing.
 PRICING = {
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Reference": {"input": 0.18, "output": 0.18},
@@ -39,6 +42,24 @@ MODEL_CONFIGS = {
     "google/gemma-4-31B-it": {"max_output_tokens": 16, "extra_create_kwargs": _NO_THINK},
 }
 DEFAULT_CONFIG = {"max_output_tokens": 16}
+
+
+def _retryable_errors():
+    """Transient Together/HTTP failures worth retrying.
+
+    Deliberately EXCLUDES AuthenticationError, BadRequestError,
+    InvalidRequestError and APIResponseValidationError: those are deterministic
+    and retrying them only delays an error the caller has to fix anyway.
+    """
+    try:
+        from together import error as te
+        return (te.APIConnectionError, te.APITimeoutError, te.RateLimitError,
+                te.Timeout, te.ResponseError)
+    except ImportError:                          # SDK absent: nothing to import
+        return (ConnectionError, TimeoutError)
+
+
+RETRYABLE_ERRORS = _retryable_errors()
 
 
 def make_client(model: str, cache=None, backend: str = "sync", **overrides):
@@ -236,24 +257,37 @@ class TogetherClient:
         return self._client
 
     def _create(self, **kwargs):
-        """Call chat.completions.create with exponential backoff on errors."""
+        """Call chat.completions.create, retrying TRANSIENT failures only.
+
+        Retry policy is tenacity's, not hand-rolled: exponential backoff WITH
+        jitter (the previous loop had none, so concurrent workers retried in
+        lockstep), and retries limited to the transient error classes.
+        Previously any Exception was retried, so an auth failure or a malformed
+        request — neither of which can ever succeed — burned all four attempts
+        and ~15 seconds before surfacing.
+        """
         if self.reasoning_effort is not None:
             kwargs.setdefault("reasoning_effort", self.reasoning_effort)
         for k, v in self.extra_create_kwargs.items():
             kwargs.setdefault(k, v)
         client = self._ensure_client()
-        for attempt in range(self.max_retries):
-            try:
-                t = time.time()
-                resp = client.chat.completions.create(**kwargs)
-                self.total_api_seconds += time.time() - t
-                self.n_api_calls += 1
-                return resp
-            except Exception:
-                self.api_errors += 1
-                if attempt == self.max_retries - 1:
-                    raise
-                time.sleep(self.backoff_base * (2 ** attempt))
+
+        def _count_error(retry_state):
+            self.api_errors += 1
+
+        @retry(retry=retry_if_exception_type(RETRYABLE_ERRORS),
+               wait=wait_exponential_jitter(initial=self.backoff_base, max=60.0),
+               stop=stop_after_attempt(self.max_retries),
+               before_sleep=_count_error,
+               reraise=True)
+        def _call():
+            t = time.time()
+            resp = client.chat.completions.create(**kwargs)
+            self.total_api_seconds += time.time() - t
+            self.n_api_calls += 1
+            return resp
+
+        return _call()
 
     BACKEND = "sync"
 

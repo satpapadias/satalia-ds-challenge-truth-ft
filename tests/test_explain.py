@@ -15,7 +15,7 @@ def mk(rid=0, statement="Taxes rose 10 percent.", speaker="jane-doe"):
     return data.Row(row_id=rid, label="false", statement=statement, subjects="taxes$economy",
                     speaker_name=speaker, speaker_job="", speaker_state="",
                     speaker_affiliation="republican", statement_context="a TV interview",
-                    statement_clean=statement, dup_key=data.norm_key(statement))
+                    statement_clean=statement, norm_key=data.normalized_statement_key(statement))
 
 
 class SpeakerDrivenPredictor:

@@ -159,7 +159,7 @@ def _mk(rid, label, statement, speaker):
     return data.Row(row_id=rid, label=label, statement=statement, subjects="",
                     speaker_name=speaker, speaker_job="", speaker_state="",
                     speaker_affiliation="", statement_context="",
-                    statement_clean=statement, dup_key=data.norm_key(statement))
+                    statement_clean=statement, norm_key=data.normalized_statement_key(statement))
 
 
 def test_speaker_disjoint_3way_pairwise_disjoint():
@@ -169,4 +169,4 @@ def test_speaker_disjoint_3way_pairwise_disjoint():
     assert len(tr) + len(va) + len(te) == len(rows)
     for a, b in ((tr, va), (tr, te), (va, te)):
         assert data.speakers_cross(a, b) == set()
-        assert data.dupkeys_cross(a, b) == set()
+        assert data.normkeys_cross(a, b) == set()

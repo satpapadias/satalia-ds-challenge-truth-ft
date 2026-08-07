@@ -14,11 +14,12 @@ Two leakage defenses are baked in (not optional post-processing):
    binary labels* under the active scheme, the ground truth is self-contradictory.
    Every member of such a group is dropped and the row IDs are logged.
 
-2. **Group-aware splitting.** Near-duplicate statements (and, for the
-   speaker-disjoint split, all statements by a shared speaker) are unioned into
-   atomic groups via union-find and assigned to ONE side of the split. This
-   prevents identical/near-identical text — and speaker identity — from leaking
-   across train/test. Both splits use the SAME majority-label stratification so
+2. **Group-aware splitting.** Repeated statements (same text after
+   normalisation — see `normalized_statement_key`; this is exact match after
+   normalisation, NOT fuzzy matching) and, for the speaker-disjoint split, all
+   statements by a shared speaker, are merged into atomic groups and assigned to
+   ONE side of the split. This prevents repeated text — and speaker identity —
+   from leaking across train/test. Both splits use the SAME majority-label stratification so
    their True/False ratios are comparable and the speaker-disjoint-vs-random gap
    isolates speaker memorization rather than class-balance drift.
 """
@@ -93,9 +94,19 @@ def clean_text(s: str) -> str:
     return " ".join(out)
 
 
-def norm_key(statement: str) -> str:
-    """Normalized key for near-duplicate detection: lowercase, strip
-    punctuation, collapse whitespace."""
+def normalized_statement_key(statement: str) -> str:
+    """Grouping key: lowercase, punctuation -> space, whitespace collapsed.
+
+    This is EXACT MATCH AFTER NORMALISATION, not fuzzy near-duplicate detection.
+    It catches re-punctuated and re-cased repeats of the same sentence and
+    nothing else — an edit of one word produces a different key. Deliberate: it
+    is deterministic and has no similarity threshold to justify, which matters
+    because this key decides which rows are dropped as label contradictions and
+    which rows are forced onto one side of a split. A real fuzzy matcher
+    (rapidfuzz / datasketch MinHash) would catch more, at the cost of a tuned
+    threshold and non-obvious merges; `_suspicious_normalization_merge` exists
+    because even this conservative key over-merges occasionally.
+    """
     keep = [c.lower() if (c.isalnum() or c.isspace()) else " " for c in statement]
     return " ".join("".join(keep).split())
 
@@ -115,7 +126,7 @@ class Row:
     speaker_affiliation: str
     statement_context: str
     statement_clean: str = field(default="")
-    dup_key: str = field(default="")
+    norm_key: str = field(default="")
 
     def y(self, scheme: str = "primary") -> int:
         return binarize(self.label, scheme)
@@ -145,33 +156,33 @@ def load(path: str = "data.csv") -> list[Row]:
                 speaker_affiliation=_get(d, "speaker_affiliation").strip(),
                 statement_context=_get(d, "statement_context").strip(),
                 statement_clean=clean_text(stmt),
-                dup_key=norm_key(stmt),
+                norm_key=normalized_statement_key(stmt),
             ))
     return rows
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics: contradiction & near-duplicate groups (for inspection/deck)
+# Diagnostics: contradiction & repeated-statement groups (for inspection/deck)
 # ---------------------------------------------------------------------------
-def _dup_groups(rows: list[Row]) -> dict[str, list[Row]]:
+def _norm_key_groups(rows: list[Row]) -> dict[str, list[Row]]:
     g: dict[str, list[Row]] = collections.defaultdict(list)
     for r in rows:
-        g[r.dup_key].append(r)
+        g[r.norm_key].append(r)
     return g
 
 
 def contradiction_groups(rows: list[Row], scheme: str = "primary") -> list[tuple[str, list[Row]]]:
-    """Near-duplicate groups whose members map to BOTH binary classes."""
+    """Repeated-statement groups whose members map to BOTH binary classes."""
     out = []
-    for key, mem in _dup_groups(rows).items():
+    for key, mem in _norm_key_groups(rows).items():
         if len(mem) > 1 and len({m.y(scheme) for m in mem}) > 1:
             out.append((key, sorted(mem, key=lambda r: r.row_id)))
     return sorted(out, key=lambda g: g[1][0].row_id)
 
 
-def _suspicious_nearmatch(members: list[Row]) -> bool:
-    """Flag a near-dup group that may be a false match from over-normalization:
-    numbers (digit tokens) differ, or word counts differ by more than 2."""
+def _suspicious_normalization_merge(members: list[Row]) -> bool:
+    """Flag a group that normalisation may have merged wrongly: the digit
+    tokens differ, or word counts differ by more than 2."""
     digitsets = {tuple(sorted(re.findall(r"\d+", m.statement))) for m in members}
     if len(digitsets) > 1:
         return True
@@ -179,13 +190,13 @@ def _suspicious_nearmatch(members: list[Row]) -> bool:
     return (max(wc) - min(wc)) > 2
 
 
-def cross_speaker_neardup_groups(rows: list[Row]) -> list[tuple[str, list[Row], bool]]:
-    """Near-duplicate groups spanning >1 distinct speaker (cross-split leak risk).
-    Returns (key, members, suspicious_flag)."""
+def cross_speaker_repeat_groups(rows: list[Row]) -> list[tuple[str, list[Row], bool]]:
+    """Repeated-statement groups spanning >1 distinct speaker (cross-split leak
+    risk). Returns (key, members, suspicious_flag)."""
     out = []
-    for key, mem in _dup_groups(rows).items():
+    for key, mem in _norm_key_groups(rows).items():
         if len(mem) > 1 and len({m.speaker_name for m in mem}) > 1:
-            out.append((key, sorted(mem, key=lambda r: r.row_id), _suspicious_nearmatch(mem)))
+            out.append((key, sorted(mem, key=lambda r: r.row_id), _suspicious_normalization_merge(mem)))
     return sorted(out, key=lambda g: g[1][0].row_id)
 
 
@@ -198,7 +209,7 @@ class CleanReport:
     n_in: int
     n_out: int
     n_dropped: int
-    dropped_groups: list                  # list of (dup_key, [row_ids], {labels})
+    dropped_groups: list                  # list of (norm_key, [row_ids], {labels})
     dropped_row_ids: list
 
     def summary(self) -> str:
@@ -239,51 +250,44 @@ def clean_dataset(rows: list[Row], scheme: str = "primary") -> tuple[list[Row], 
 
 
 # ---------------------------------------------------------------------------
-# Union-find for group-aware splitting
+# Group-aware splitting
 # ---------------------------------------------------------------------------
-class _UnionFind:
-    def __init__(self, items):
-        self.parent = {x: x for x in items}
-
-    def find(self, x):
-        root = x
-        while self.parent[root] != root:
-            root = self.parent[root]
-        while self.parent[x] != root:           # path compression
-            self.parent[x], x = root, self.parent[x]
-        return root
-
-    def union(self, a, b):
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[ra] = rb
-
-
 def _components(rows: list[Row], link_speaker: bool) -> list[list[Row]]:
     """Connected components of rows under union of relations:
-       always: share a near-duplicate key; optionally: share a speaker."""
-    uf = _UnionFind([r.row_id for r in rows])
+       always: share a normalized-statement key; optionally: share a speaker.
+
+    Uses scipy's DisjointSet rather than a hand-rolled union-find. Component
+    MEMBERSHIP is implementation-independent, and so is the returned ORDER:
+    components are keyed by root in a dict populated while iterating `rows` in
+    order, so each component's key is inserted when its first row is seen,
+    regardless of which member the implementation happens to pick as root. That
+    ordering feeds the seeded shuffle in _stratified_assign, so it must not
+    drift — tests/test_data.py pins the resulting split membership.
+    """
+    from scipy.cluster.hierarchy import DisjointSet
+
+    uf = DisjointSet([r.row_id for r in rows])
     by_id = {r.row_id: r for r in rows}
 
     key_first: dict[str, int] = {}
     for r in rows:
-        if r.dup_key in key_first:
-            uf.union(r.row_id, key_first[r.dup_key])
+        if r.norm_key in key_first:
+            uf.merge(r.row_id, key_first[r.norm_key])
         else:
-            key_first[r.dup_key] = r.row_id
+            key_first[r.norm_key] = r.row_id
 
     if link_speaker:
         spk_first: dict[str, int] = {}
         for r in rows:
             spk = r.speaker_name or f"__empty__{r.row_id}"   # empty speakers stay singletons
             if spk in spk_first:
-                uf.union(r.row_id, spk_first[spk])
+                uf.merge(r.row_id, spk_first[spk])
             else:
                 spk_first[spk] = r.row_id
 
     comps: dict[int, list[Row]] = collections.defaultdict(list)
     for r in rows:
-        comps[uf.find(r.row_id)].append(by_id[r.row_id])
+        comps[uf[r.row_id]].append(by_id[r.row_id])
     return list(comps.values())
 
 
@@ -324,15 +328,15 @@ def _stratified_assign(comps, test_frac, seed, scheme):
 
 
 def speaker_disjoint_split(rows, test_frac=0.2, seed=0, scheme="primary"):
-    """Split so NO speaker and NO near-duplicate group crosses train/test.
-    Components = (same speaker) ∪ (same near-dup key). This is the primary,
-    leakage-resistant split."""
+    """Split so NO speaker and NO repeated-statement group crosses train/test.
+    Components = (same speaker) union (same normalized-statement key). This is
+    the primary, leakage-resistant split."""
     return _stratified_assign(_components(rows, link_speaker=True), test_frac, seed, scheme)
 
 
 def speaker_disjoint_3way(rows, val_frac=0.2, test_frac=0.2, seed=0, scheme="primary"):
     """Three-way speaker-disjoint split -> (train, val, test), all pairwise
-    speaker-disjoint and near-dup-group-disjoint. Tune on val, report on test;
+    speaker-disjoint and repeat-group-disjoint. Tune on val, report on test;
     test matches speaker_disjoint_split(test_frac, seed) so it lines up with the
     later fine-tuned comparison."""
     train_full, test = speaker_disjoint_split(rows, test_frac=test_frac, seed=seed, scheme=scheme)
@@ -342,8 +346,8 @@ def speaker_disjoint_3way(rows, val_frac=0.2, test_frac=0.2, seed=0, scheme="pri
 
 
 def stratified_random_split(rows, test_frac=0.2, seed=0, scheme="primary"):
-    """Class-stratified split. Near-duplicate groups stay together (no identical
-    text across train/test), but speakers MAY cross — by design, so the gap vs
+    """Class-stratified split. Repeated-statement groups stay together (no
+    repeated text across train/test), but speakers MAY cross — by design, so the gap vs
     the speaker-disjoint split estimates speaker memorization."""
     return _stratified_assign(_components(rows, link_speaker=False), test_frac, seed, scheme)
 
@@ -358,9 +362,9 @@ def speakers_cross(train, test) -> set:
     return spk(train) & spk(test)
 
 
-def dupkeys_cross(train, test) -> set:
-    """Near-duplicate keys present on both sides."""
-    return {r.dup_key for r in train} & {r.dup_key for r in test}
+def normkeys_cross(train, test) -> set:
+    """Normalized-statement keys present on both sides."""
+    return {r.norm_key for r in train} & {r.norm_key for r in test}
 
 
 def class_balance(rows, scheme="primary") -> tuple[int, int, float]:

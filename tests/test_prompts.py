@@ -20,7 +20,7 @@ def mk(statement="Taxes went up 10 percent.", **kw):
     )
     base.update(kw)
     base["statement_clean"] = data.clean_text(base["statement"])
-    base["dup_key"] = data.norm_key(base["statement"])
+    base["norm_key"] = data.normalized_statement_key(base["statement"])
     return data.Row(**base)
 
 

@@ -25,16 +25,14 @@ class PredictionResult:
 
 
 def compute_metrics(y_true, preds, probs) -> dict:
-    """Standard metric bundle for a set of predictions with probabilities."""
-    return {
-        "accuracy": M.accuracy(y_true, preds),
-        "balanced_accuracy": M.balanced_accuracy(y_true, preds),
-        "macro_f1": M.macro_f1(y_true, preds),
-        "roc_auc": M.roc_auc(y_true, probs),
-        "pr_auc": M.pr_auc(y_true, probs),
-        "brier": M.brier(y_true, probs),
-        "ece": M.ece(y_true, probs),
-    }
+    """Standard metric bundle for a set of predictions with probabilities.
+
+    Delegates to metrics.metric_bundle. This used to be a second, hand-listed
+    copy of the same bundle that had already drifted — it was missing the
+    per-class precision/recall keys — so a predictor's `.metrics` and the
+    evaluation scripts' tables silently reported different things.
+    """
+    return M.metric_bundle(y_true, preds, probs)
 
 
 class Predictor(ABC):

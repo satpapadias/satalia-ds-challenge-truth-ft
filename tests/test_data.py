@@ -15,7 +15,7 @@ def mk(rid, label, statement, speaker):
         row_id=rid, label=label, statement=statement, subjects="",
         speaker_name=speaker, speaker_job="", speaker_state="",
         speaker_affiliation="", statement_context="",
-        statement_clean=data.clean_text(statement), dup_key=data.norm_key(statement),
+        statement_clean=data.clean_text(statement), norm_key=data.normalized_statement_key(statement),
     )
 
 
@@ -36,10 +36,10 @@ def test_clean_text_restores_contractions():
 
 
 def test_norm_key_collapses_punct_and_case():
-    assert data.norm_key("On reconciliation.") == data.norm_key("on reconciliation")
-    assert data.norm_key("Jobs grew, fast!") == data.norm_key("jobs grew fast")
+    assert data.normalized_statement_key("On reconciliation.") == data.normalized_statement_key("on reconciliation")
+    assert data.normalized_statement_key("Jobs grew, fast!") == data.normalized_statement_key("jobs grew fast")
     # punctuation becomes a space, so "U.S." -> "u s" (does NOT collapse to "us")
-    assert data.norm_key("U.S. jobs") != data.norm_key("us jobs")
+    assert data.normalized_statement_key("U.S. jobs") != data.normalized_statement_key("us jobs")
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ def test_no_exact_duplicate_survives_with_conflicting_binary_labels():
     clean, _ = data.clean_dataset(rows, scheme="primary")
     by_key = {}
     for r in clean:
-        by_key.setdefault(r.dup_key, set()).add(r.y("primary"))
+        by_key.setdefault(r.norm_key, set()).add(r.y("primary"))
     assert all(len(v) == 1 for v in by_key.values()), "a dup key kept both classes"
     # the half-true/mostly-true pair is NOT a contradiction under primary -> kept
     assert {r.row_id for r in clean} == {2, 3}
@@ -96,7 +96,7 @@ def test_speaker_disjoint_split_invariants():
     train, test = data.speaker_disjoint_split(clean, test_frac=0.34, seed=1)
     assert len(train) + len(test) == len(clean)            # partition
     assert data.speakers_cross(train, test) == set()       # no speaker crosses
-    assert data.dupkeys_cross(train, test) == set()        # no near-dup crosses
+    assert data.normkeys_cross(train, test) == set()        # no near-dup crosses
 
 
 def test_stratified_split_keeps_neardups_together():
@@ -104,18 +104,18 @@ def test_stratified_split_keeps_neardups_together():
     clean, _ = data.clean_dataset(rows, "primary")
     train, test = data.stratified_random_split(clean, test_frac=0.34, seed=1)
     assert len(train) + len(test) == len(clean)
-    assert data.dupkeys_cross(train, test) == set()        # no identical text leak
+    assert data.normkeys_cross(train, test) == set()        # no identical text leak
 
 
-def test_cross_speaker_neardup_group_stays_on_one_side():
+def test_cross_speaker_repeat_group_stays_on_one_side():
     """The near-dup pair by speakerX/speakerY must not be split apart."""
     rows = _synthetic_corpus()
     clean, _ = data.clean_dataset(rows, "primary")
-    key = data.norm_key("The bill costs ten billion dollars.")
+    key = data.normalized_statement_key("The bill costs ten billion dollars.")
     for splitter in (data.speaker_disjoint_split, data.stratified_random_split):
         train, test = splitter(clean, test_frac=0.34, seed=3)
-        in_train = any(r.dup_key == key for r in train)
-        in_test = any(r.dup_key == key for r in test)
+        in_train = any(r.norm_key == key for r in train)
+        in_test = any(r.norm_key == key for r in test)
         assert in_train != in_test, "near-dup group landed on both sides"
 
 
@@ -126,6 +126,6 @@ def test_diagnostics_find_groups():
     ]
     contra = data.contradiction_groups(rows, "primary")
     assert any({m.row_id for m in mem} == {99, 100} for _, mem in contra)
-    cross = data.cross_speaker_neardup_groups(rows)
+    cross = data.cross_speaker_repeat_groups(rows)
     keys = {key for key, _, _ in cross}
-    assert data.norm_key("the bill costs ten billion dollars") in keys
+    assert data.normalized_statement_key("the bill costs ten billion dollars") in keys

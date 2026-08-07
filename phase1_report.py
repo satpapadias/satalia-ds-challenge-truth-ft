@@ -56,7 +56,7 @@ def main():
 
     # 2. Cross-speaker near-duplicate groups in full --------------------
     hr("CROSS-SPEAKER NEAR-DUPLICATE GROUPS (leak risk; verify genuineness)")
-    cross = data.cross_speaker_neardup_groups(rows)
+    cross = data.cross_speaker_repeat_groups(rows)
     n_flagged = 0
     for gi, (key, members, suspicious) in enumerate(cross, 1):
         flag = "  [FLAG: possible false match]" if suspicious else ""
@@ -98,8 +98,8 @@ def main():
 
     checks = [
         ("speaker-disjoint: no speaker crosses", data.speakers_cross(tr_sd, te_sd)),
-        ("speaker-disjoint: no near-dup group crosses", data.dupkeys_cross(tr_sd, te_sd)),
-        ("stratified: no near-dup group crosses", data.dupkeys_cross(tr_sr, te_sr)),
+        ("speaker-disjoint: no near-dup group crosses", data.normkeys_cross(tr_sd, te_sd)),
+        ("stratified: no near-dup group crosses", data.normkeys_cross(tr_sr, te_sr)),
     ]
     all_ok = True
     for label, violations in checks:

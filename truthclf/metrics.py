@@ -293,6 +293,26 @@ def bootstrap_bundle(y_true, preds, probs, n_boot=1000, seed=0, alpha=0.05) -> d
     return out
 
 
+def paired_accuracy_diff(y_true, pred_a, pred_b, n_boot=2000, seed=0, alpha=0.05):
+    """Bootstrap CI for accuracy(A) - accuracy(B) on the SAME test set.
+
+    Returns (point, lo, hi). Resampling is paired: one index draw is applied to
+    both predictors, so the CI is on the difference rather than on two
+    independent accuracies. Lives here rather than in an evaluation script,
+    which previously carried its own copy of this loop.
+    """
+    yt, a, b = _arr(y_true), _arr(pred_a), _arr(pred_b)
+    n = len(yt)
+    rng = np.random.default_rng(seed)
+    point = float(np.mean(a == yt) - np.mean(b == yt))
+    diffs = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        diffs[i] = np.mean(a[idx] == yt[idx]) - np.mean(b[idx] == yt[idx])
+    lo, hi = np.percentile(diffs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return point, float(lo), float(hi)
+
+
 def mcnemar(y_true, pred_a, pred_b) -> dict:
     """McNemar's test for two classifiers on the SAME test set.
 

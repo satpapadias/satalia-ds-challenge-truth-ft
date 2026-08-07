@@ -269,9 +269,10 @@ data.csv         the provided challenge dataset
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q     # or: python3 tests/run_tests.py
+python3 -m pytest tests/ -q
 ```
-44 tests; **all LLM calls are mocked**, so the suite is deterministic and free.
+**All LLM calls are mocked**, so the suite is deterministic and free. Run it
+through the venv: `.venv/bin/python -m pytest tests/ -q`.
 
 ## Data & confidentiality
 
