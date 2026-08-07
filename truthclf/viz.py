@@ -1,8 +1,12 @@
 """Plotting helpers (display only) built on truthclf.metrics.
 
-matplotlib is imported lazily so the rest of the package has no plotting
-dependency. Functions take a ZeroShotRun (or probs+labels) and return a
-matplotlib Axes for display in a notebook.
+Functions take a ZeroShotRun (or probs+labels) and return a matplotlib Axes for
+display in a notebook.
+
+matplotlib is imported inside each function rather than at module scope: it is
+an optional extra (`pip install -e ".[viz]"`), and importing truthclf.viz on a
+headless install should not fail until a plot is actually requested. This is
+about the extra being genuinely optional, not about minimising dependencies.
 """
 
 from __future__ import annotations

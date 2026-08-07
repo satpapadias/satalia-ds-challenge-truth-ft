@@ -1,14 +1,24 @@
 """Evaluation metrics for binary truthfulness classification.
 
-Pure Python + numpy (no scipy/sklearn dependency):
-  - balanced_accuracy, macro_f1            (robust to class imbalance)
-  - roc_auc, pr_auc (average precision)
-  - brier, ece, reliability_curve          (calibration)
-  - bootstrap_ci                           (CIs on any metric)
-  - mcnemar                                (paired model comparison, exact)
+Thin, explicit wrappers over reference implementations — scikit-learn for the
+classification/ranking/calibration metrics, statsmodels for McNemar — plus the
+few things those libraries do not provide:
+
+  - ece                    (no scikit-learn equivalent)
+  - reliability_curve      (calibration_curve drops empty bins and returns no counts)
+  - bootstrap_bundle       (one shared resample feeding every metric, for cost)
+
+The wrappers exist so call sites keep a stable signature and so every
+edge-case choice (zero_division, labels, the degenerate-input convention) is
+made once, visibly, here rather than being re-decided at each call.
 
 Conventions: y_true is array-like of {0,1}; y_pred is {0,1}; y_score/y_prob is
 a real-valued / [0,1] confidence that the label is 1 (True).
+
+Degenerate-input convention: metrics that are mathematically undefined return
+NaN rather than a plausible-looking number. bootstrap_ci drops NaN resamples and
+warns with a count, so a degenerate draw narrows the interval visibly instead of
+silently.
 """
 
 from __future__ import annotations
@@ -17,8 +27,12 @@ import math
 import warnings
 
 import numpy as np
+from sklearn import metrics as skm
+from statsmodels.stats.contingency_tables import mcnemar as _sm_mcnemar
 
-EPS = 1e-12
+# Both classes are always named explicitly so a resample (or a degenerate split)
+# that happens to contain only one class still yields a 2x2 shape.
+LABELS = [0, 1]
 
 
 def _arr(x):
@@ -29,98 +43,82 @@ def _arr(x):
 # Threshold metrics
 # ---------------------------------------------------------------------------
 def confusion(y_true, y_pred) -> dict:
-    yt, yp = _arr(y_true).astype(int), _arr(y_pred).astype(int)
-    tp = int(np.sum((yt == 1) & (yp == 1)))
-    tn = int(np.sum((yt == 0) & (yp == 0)))
-    fp = int(np.sum((yt == 0) & (yp == 1)))
-    fn = int(np.sum((yt == 1) & (yp == 0)))
-    return {"tp": tp, "tn": tn, "fp": fp, "fn": fn}
+    # labels=LABELS pins the matrix to 2x2 even when one class is absent, which
+    # ravel() would otherwise silently mis-unpack.
+    tn, fp, fn, tp = skm.confusion_matrix(y_true, y_pred, labels=LABELS).ravel()
+    return {"tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn)}
 
 
 def accuracy(y_true, y_pred) -> float:
-    yt, yp = _arr(y_true), _arr(y_pred)
-    return float(np.mean(yt == yp))
+    return float(skm.accuracy_score(y_true, y_pred))
 
 
 def balanced_accuracy(y_true, y_pred) -> float:
-    """Mean of per-class recall (TPR and TNR)."""
-    c = confusion(y_true, y_pred)
-    tpr = c["tp"] / (c["tp"] + c["fn"] + EPS)
-    tnr = c["tn"] / (c["tn"] + c["fp"] + EPS)
-    return float((tpr + tnr) / 2.0)
+    """Mean of per-class recall (TPR and TNR).
 
-
-def _f1_for(positive_label, y_true, y_pred) -> float:
-    yt, yp = _arr(y_true).astype(int), _arr(y_pred).astype(int)
-    tp = np.sum((yt == positive_label) & (yp == positive_label))
-    fp = np.sum((yt != positive_label) & (yp == positive_label))
-    fn = np.sum((yt == positive_label) & (yp != positive_label))
-    prec = tp / (tp + fp + EPS)
-    rec = tp / (tp + fn + EPS)
-    return float(2 * prec * rec / (prec + rec + EPS))
+    Note a deliberate difference from the previous hand-rolled version: if a
+    class is absent from y_true its recall is undefined, and sklearn averages
+    over the classes that are present (the old code used an epsilon denominator
+    and folded in a 0.0). Both classes are present in every split we report, so
+    no reported number changes; the sklearn behaviour is the correct one.
+    """
+    return float(skm.balanced_accuracy_score(y_true, y_pred))
 
 
 def macro_f1(y_true, y_pred) -> float:
-    """Unweighted mean of F1 for class 0 and class 1."""
-    return float((_f1_for(0, y_true, y_pred) + _f1_for(1, y_true, y_pred)) / 2.0)
+    """Unweighted mean of F1 for class 0 and class 1.
+
+    zero_division=0.0: if a class is never predicted AND never present, its F1 is
+    undefined and counted as 0, which keeps the previous (deliberately
+    unflattering) semantics. zero_division=np.nan would instead drop the class
+    from the mean and report 1.0 for a run that never tested one class at all.
+    """
+    return float(skm.f1_score(y_true, y_pred, labels=LABELS, average="macro",
+                              zero_division=0.0))
 
 
 def precision_recall(y_true, y_pred) -> dict:
-    """Per-class precision and recall: {cls: (precision, recall)} for cls in 0,1."""
-    yt, yp = _arr(y_true).astype(int), _arr(y_pred).astype(int)
-    out = {}
-    for cls in (0, 1):
-        tp = np.sum((yt == cls) & (yp == cls))
-        fp = np.sum((yt != cls) & (yp == cls))
-        fn = np.sum((yt == cls) & (yp != cls))
-        out[cls] = (float(tp / (tp + fp + EPS)), float(tp / (tp + fn + EPS)))
-    return out
+    """Per-class precision and recall: {cls: (precision, recall)} for cls in 0,1.
+
+    zero_division=np.nan here, unlike macro_f1: these values are reported
+    individually, and an undefined per-class precision should read as undefined
+    rather than as a score of 0.
+    """
+    prec, rec, _, _ = skm.precision_recall_fscore_support(
+        y_true, y_pred, labels=LABELS, zero_division=np.nan)
+    return {cls: (float(prec[i]), float(rec[i])) for i, cls in enumerate(LABELS)}
 
 
 # ---------------------------------------------------------------------------
 # Ranking metrics
 # ---------------------------------------------------------------------------
 def roc_auc(y_true, y_score) -> float:
-    """AUC via the Mann-Whitney U statistic with tie-aware average ranks."""
+    """ROC AUC, tie-aware. NaN when only one class is present (undefined)."""
     yt = _arr(y_true).astype(int)
-    s = _arr(y_score)
-    n_pos = int(np.sum(yt == 1))
-    n_neg = int(np.sum(yt == 0))
-    if n_pos == 0 or n_neg == 0:
+    if yt.size == 0 or yt.min() == yt.max():
+        # Checked here rather than letting sklearn warn-and-return-NaN, so a
+        # bootstrap over degenerate draws does not emit thousands of warnings.
         return float("nan")
-    order = np.argsort(s, kind="mergesort")
-    s_sorted = s[order]
-    ranks = np.empty(len(s), dtype=float)
-    i = 0
-    while i < len(s_sorted):                      # average ranks within ties
-        j = i
-        while j + 1 < len(s_sorted) and s_sorted[j + 1] == s_sorted[i]:
-            j += 1
-        avg_rank = (i + j) / 2.0 + 1.0            # 1-based
-        ranks[order[i:j + 1]] = avg_rank
-        i = j + 1
-    sum_ranks_pos = float(np.sum(ranks[yt == 1]))
-    return (sum_ranks_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+    return float(skm.roc_auc_score(yt, _arr(y_score)))
 
 
 def pr_auc(y_true, y_score) -> float:
-    """Average precision: sum over recall increments of precision (sklearn AP)."""
+    """Average precision (area under the precision-recall curve).
+
+    Delegates to sklearn, which steps over DISTINCT score thresholds. The
+    previous hand-rolled version accumulated precision per SAMPLE, so inside a
+    group of tied scores it credited operating points the classifier cannot
+    actually realise — making the result depend on row order. With every score
+    tied it returned 0.417 / 0.833 / 1.000 for the same labels in different
+    orders, where the correct answer is the positive prevalence in all three.
+
+    NaN when there are no positives (undefined); sklearn returns 0.0 there,
+    which is indistinguishable from a genuinely terrible ranking.
+    """
     yt = _arr(y_true).astype(int)
-    s = _arr(y_score)
-    n_pos = int(np.sum(yt == 1))
-    if n_pos == 0:
+    if not yt.any():
         return float("nan")
-    order = np.argsort(-s, kind="mergesort")      # descending score
-    yt = yt[order]
-    tp = np.cumsum(yt)
-    fp = np.cumsum(1 - yt)
-    precision = tp / (tp + fp + EPS)
-    recall = tp / n_pos
-    ap, prev_recall = 0.0, 0.0
-    for p, r in zip(precision, recall):
-        ap += p * (r - prev_recall)
-        prev_recall = r
-    return float(ap)
+    return float(skm.average_precision_score(yt, _arr(y_score)))
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +126,19 @@ def pr_auc(y_true, y_score) -> float:
 # ---------------------------------------------------------------------------
 def brier(y_true, y_prob) -> float:
     """Mean squared error between probability and outcome."""
-    yt, p = _arr(y_true), _arr(y_prob)
-    return float(np.mean((p - yt) ** 2))
+    return float(skm.brier_score_loss(y_true, _arr(y_prob), pos_label=1))
 
 
 def reliability_curve(y_true, y_prob, n_bins=10):
     """Equal-width bins over [0,1]. Returns per-bin dict arrays:
-    mean_pred, frac_pos, count (empty bins reported with count=0)."""
+    mean_pred, frac_pos, count (empty bins reported with count=0).
+
+    Kept hand-rolled: sklearn.calibration.calibration_curve silently DROPS empty
+    bins and returns no per-bin counts, so a caller cannot tell a well-populated
+    bin from one holding a single point, nor see which bins were empty. Both are
+    needed by viz.reliability_plot and by the ECE diagnostics. Pinned against
+    calibration_curve on the non-empty bins in tests/test_metrics.py.
+    """
     yt, p = _arr(y_true), _arr(y_prob)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     mean_pred, frac_pos, count = [], [], []
@@ -150,7 +154,32 @@ def reliability_curve(y_true, y_prob, n_bins=10):
 
 
 def ece(y_true, y_prob, n_bins=10) -> float:
-    """Expected Calibration Error using confidence of the predicted class."""
+    """Expected Calibration Error using confidence of the predicted class.
+
+    Kept hand-rolled: scikit-learn has no ECE, and torchmetrics/netcal are not
+    worth a dependency for 15 lines. Pinned in tests against an analytically
+    known case and against calibration_curve's binning.
+
+    KNOWN RESOLUTION LIMIT: confidence-of-predicted-class lives in [0.5, 1] for
+    binary classification, but the bins are equal-width over [0, 1]. The lower
+    half is therefore structurally empty and the effective resolution is
+    n_bins/2, not n_bins — a caller asking for 10 bins gets 5. Use
+    `ece_bin_report` to see the occupancy directly.
+    """
+    return _ece_bins(y_true, y_prob, n_bins)["ece"]
+
+
+def ece_bin_report(y_true, y_prob, n_bins=10) -> dict:
+    """ECE plus the per-bin occupancy it was computed from.
+
+    Exists so the structural-empty-bin limit documented on `ece` is visible to
+    the caller instead of being folded into a bare float: `n_bins_occupied` vs
+    `n_bins` shows the effective resolution directly.
+    """
+    return _ece_bins(y_true, y_prob, n_bins)
+
+
+def _ece_bins(y_true, y_prob, n_bins) -> dict:
     yt, p = _arr(y_true), _arr(y_prob)
     pred = (p >= 0.5).astype(int)
     conf = np.where(pred == 1, p, 1.0 - p)        # confidence in predicted class
@@ -158,13 +187,21 @@ def ece(y_true, y_prob, n_bins=10) -> float:
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     n = len(yt)
     total = 0.0
+    counts, gaps = [], []
     for b in range(n_bins):
         lo, hi = edges[b], edges[b + 1]
         mask = (conf >= lo) & (conf < hi) if b < n_bins - 1 else (conf >= lo) & (conf <= hi)
         k = int(np.sum(mask))
+        counts.append(k)
         if k:
-            total += (k / n) * abs(np.mean(correct[mask]) - np.mean(conf[mask]))
-    return float(total)
+            gap = abs(np.mean(correct[mask]) - np.mean(conf[mask]))
+            gaps.append(float(gap))
+            total += (k / n) * gap
+        else:
+            gaps.append(float("nan"))
+    return {"ece": float(total), "n_bins": n_bins,
+            "n_bins_occupied": int(sum(1 for c in counts if c)),
+            "count": counts, "gap": gaps, "edges": edges.tolist()}
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +260,14 @@ def metric_bundle(y_true, preds, probs) -> dict:
 
 def bootstrap_bundle(y_true, preds, probs, n_boot=1000, seed=0, alpha=0.05) -> dict:
     """Percentile-bootstrap CIs for every metric in metric_bundle, using one
-    shared resample per iteration. Returns {metric: (point, lo, hi)}."""
+    shared resample per iteration. Returns {metric: (point, lo, hi)}.
+
+    Kept hand-rolled purely for COST: one pass computes all 11 metrics per
+    resample, where scipy.stats.bootstrap would need 11 independent runs of
+    n_boot draws each. Sharing the draw is not a statistical requirement — each
+    metric's marginal CI is identically distributed either way, and we never do
+    joint inference across metrics.
+    """
     yt, pp, pb = _arr(y_true), _arr(preds), _arr(probs)
     n = len(yt)
     rng = np.random.default_rng(seed)
@@ -239,18 +283,28 @@ def bootstrap_bundle(y_true, preds, probs, n_boot=1000, seed=0, alpha=0.05) -> d
         arr = np.array([s for s in samples[k] if not math.isnan(s)])
         if len(arr) == 0:
             out[k] = (pt, float("nan"), float("nan"))
-        else:
-            out[k] = (pt, float(np.percentile(arr, 100 * alpha / 2)),
-                      float(np.percentile(arr, 100 * (1 - alpha / 2))))
+            continue
+        if len(arr) < n_boot:
+            warnings.warn(
+                f"bootstrap_bundle: {n_boot - len(arr)}/{n_boot} resamples were NaN "
+                f"for {k!r} and were dropped.", RuntimeWarning, stacklevel=2)
+        out[k] = (pt, float(np.percentile(arr, 100 * alpha / 2)),
+                  float(np.percentile(arr, 100 * (1 - alpha / 2))))
     return out
 
 
 def mcnemar(y_true, pred_a, pred_b) -> dict:
-    """Exact McNemar's test for two classifiers on the SAME test set.
+    """McNemar's test for two classifiers on the SAME test set.
 
-    b = #(A correct, B wrong); c = #(A wrong, B correct). Two-sided exact
-    binomial p-value over the n=b+c discordant pairs (no scipy needed).
-    Also returns the chi-square statistic with continuity correction.
+    b = #(A correct, B wrong); c = #(A wrong, B correct).
+
+    `p_value` is the two-sided EXACT binomial test over the n=b+c discordant
+    pairs — the reported figure, and the right choice at any n. `chi2` and
+    `p_value_chi2` are the continuity-corrected chi-square approximation,
+    reported alongside for reference. The previous hand-rolled version returned
+    the exact p next to a chi2 from a different test with no indication they were
+    not a matched pair, and its chi2 formula was unclamped, yielding 1/n instead
+    of 0 when b == c.
     """
     yt = _arr(y_true).astype(int)
     a_ok = (_arr(pred_a).astype(int) == yt)
@@ -259,10 +313,12 @@ def mcnemar(y_true, pred_a, pred_b) -> dict:
     c = int(np.sum(~a_ok & b_ok))
     n = b + c
     if n == 0:
-        return {"b": b, "c": c, "n_discordant": 0, "chi2": 0.0, "p_value": 1.0}
-    k = min(b, c)
-    tail = sum(math.comb(n, i) for i in range(0, k + 1)) * (0.5 ** n)
-    p_value = min(1.0, 2.0 * tail)
-    chi2 = (abs(b - c) - 1) ** 2 / n              # continuity-corrected
-    return {"b": b, "c": c, "n_discordant": n, "chi2": float(chi2),
-            "p_value": float(p_value)}
+        return {"b": b, "c": c, "n_discordant": 0, "chi2": 0.0, "p_value": 1.0,
+                "p_value_chi2": 1.0}
+    # Only the off-diagonal counts enter the test; the diagonal is filled for shape.
+    table = [[int(np.sum(a_ok & b_ok)), b], [c, int(np.sum(~a_ok & ~b_ok))]]
+    exact = _sm_mcnemar(table, exact=True)
+    approx = _sm_mcnemar(table, exact=False, correction=True)
+    return {"b": b, "c": c, "n_discordant": n,
+            "chi2": float(approx.statistic), "p_value": float(exact.pvalue),
+            "p_value_chi2": float(approx.pvalue)}
