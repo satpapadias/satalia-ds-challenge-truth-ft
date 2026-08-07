@@ -50,7 +50,7 @@ def hr(t):
 
 
 def _ptrue(choice):
-    p = prob_from_logprobs(llm._extract_top_logprobs(choice))
+    p = prob_from_logprobs(llm.top_logprobs_from_choice(choice))
     if p is None:
         tok = (choice.message.content or "").strip().lower()
         p = 1.0 if tok.startswith("true") else 0.0
@@ -138,7 +138,7 @@ def ft_decision_probs(rows, c):
                                           messages=prompts.build_messages(need[0], VARIANT, "decision"),
                                           max_tokens=1, temperature=0, **NO_THINK,
                                           extra_body={"logprobs": True, "top_logprobs": 10})
-        top = llm._extract_top_logprobs(probe.choices[0])
+        top = llm.top_logprobs_from_choice(probe.choices[0])
         if not top or prob_from_logprobs(top) is None:
             raise SystemExit(f"endpoint did not return usable logprobs: {top} -> stop.")
         print(f"  logprobs OK: {dict(list(top.items())[:4])}", flush=True)

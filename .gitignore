@@ -5,6 +5,12 @@ CLAUDE.md
 .claude/
 contradictions.txt
 
+# --- LLM response cache ---
+# .llm_cache/ is the schema-2 diskcache (SQLite, ~15 MB, machine-local).
+# .llm_cache.json is the schema-1 archive and stays TRACKED: it is the record of
+# what was actually spent, and scripts/migrate_cache.py replays from it.
+.llm_cache/
+
 # --- Python ---
 __pycache__/
 *.py[cod]

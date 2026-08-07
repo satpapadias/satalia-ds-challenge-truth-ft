@@ -16,6 +16,7 @@ authors = [{ name = "Satalia DS Challenge submission" }]
 # the metrics, calibration, threshold and split code defers to their reference
 # implementations rather than hand-rolling numerical routines.
 dependencies = [
+    "diskcache>=5.6",
     "numpy>=1.26",
     "scikit-learn>=1.5",
     "scipy>=1.14",

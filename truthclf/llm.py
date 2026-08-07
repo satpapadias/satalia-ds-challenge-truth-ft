@@ -9,6 +9,7 @@ differ slightly, so cost figures are estimates (accurate to within a few %).
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import math
@@ -78,40 +79,103 @@ def estimate_cost(n_input_tokens: int, n_output_tokens: int, model: str) -> floa
 
 
 # ---------------------------------------------------------------------------
-# On-disk response cache (keyed by model + messages + params) so reruns are free.
+# On-disk response cache so reruns are free.
 # ---------------------------------------------------------------------------
 # Anchor the cache to the project root (parent of this package), so it is found
 # regardless of the current working directory (e.g. when run from notebooks/).
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_CACHE = os.path.join(_PROJECT_ROOT, ".llm_cache.json")
+_DEFAULT_CACHE = os.path.join(_PROJECT_ROOT, ".llm_cache")
+
+# Bump when the meaning of a cached VALUE changes in a way the key cannot express.
+# Every stored key embeds this, so a bump invalidates the whole cache rather than
+# silently serving entries that the current code would interpret differently.
+CACHE_SCHEMA = 2
 
 
 class ResponseCache:
+    """Cache of raw model responses, keyed by everything that determines them.
+
+    The key binds: schema version, serving backend, call kind, model id, the full
+    message list, and the request params. Two properties matter:
+
+    * **Backend is part of the key.** The sync serverless API and the Batch API
+      are different serving paths that can return different completions for the
+      same prompt. Schema 1 deliberately shared keys between them, so whichever
+      ran last silently overwrote the other's value and the recorded numbers
+      depended on run order. They are now separate namespaces.
+    * **Values are raw.** Nothing is parsed before storage — a cached score is
+      the model's text, a cached classification is the API's logprobs structure.
+      Parsing happens on read, so changing a parser can never leave stale
+      pre-parsed values behind a key that did not move.
+
+    Failed calls are NOT written. A miss must retry; a cached failure cannot.
+
+    Storage is diskcache (SQLite/WAL): per-key writes, atomic, and safe for
+    concurrent processes on one host. It sits behind this interface so the
+    backing store stays swappable.
+    """
+
     def __init__(self, path: str | None = None):
+        import diskcache
         self.path = path or _DEFAULT_CACHE
-        self._data: dict[str, str] = {}
-        if os.path.exists(self.path):
-            try:
-                with open(self.path, encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except Exception:
-                self._data = {}
+        self._cache = diskcache.Cache(self.path)
 
     @staticmethod
-    def key(model: str, messages: list[dict], **params) -> str:
-        blob = json.dumps({"model": model, "messages": messages, "params": params},
+    def key(model: str, messages: list[dict], *, backend: str, call: str, **params) -> str:
+        """Content hash of the full request identity. `backend` is "sync"/"batch";
+        `call` is "score"/"classify"/"complete"."""
+        blob = json.dumps({"cache_schema": CACHE_SCHEMA, "backend": backend, "call": call,
+                           "model": model, "messages": messages, "params": params},
                           sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def get(self, key: str):
-        return self._data.get(key)
+        """Cached raw value, or None on a miss."""
+        env = self._cache.get(key)
+        return None if env is None else env["value"]
 
-    def set(self, key: str, value: str) -> None:
-        self._data[key] = value
+    def envelope(self, key: str):
+        """Full stored record including provenance (backend, model, timestamp, sdk)."""
+        return self._cache.get(key)
+
+    def set(self, key: str, value: str, *, backend: str, call: str, model: str) -> None:
+        """Store a successful response with provenance.
+
+        Empty values are treated as failures and are NOT stored: in schema 1 a
+        transient Batch-API failure was written as "" and then served as a hit
+        forever, silently feeding a neutral p=0.5 into the reported metrics.
+        """
+        if value == "":
+            return
+        self._cache[key] = {
+            "value": value,
+            "schema": CACHE_SCHEMA,
+            "backend": backend,
+            "call": call,
+            "model": model,
+            "written_at": datetime.datetime.now(datetime.timezone.utc)
+                                  .isoformat(timespec="seconds"),
+            "sdk": _sdk_version(),
+        }
 
     def flush(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False)
+        """No-op: diskcache writes through on set(). Kept so call sites that
+        batched up a whole-file dump under schema 1 keep working."""
+
+    def close(self) -> None:
+        self._cache.close()
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+def _sdk_version() -> str:
+    """Version string recorded in each cache envelope, for provenance."""
+    try:
+        import importlib.metadata as md
+        return f"together {md.version('together')}"
+    except Exception as e:                        # provenance only; never fatal
+        return f"unknown ({type(e).__name__})"
 
 
 # ---------------------------------------------------------------------------
@@ -180,17 +244,22 @@ class TogetherClient:
                     raise
                 time.sleep(self.backoff_base * (2 ** attempt))
 
+    BACKEND = "sync"
+
+    def _cache_key(self, messages: list[dict], call: str, **params) -> str:
+        return self.cache.key(self.model, messages, backend=self.BACKEND, call=call,
+                              **params, **self._params_key())
+
     # --- primary: 0-100 score path ---------------------------------------
     def score_one(self, messages: list[dict]) -> str:
-        k = self.cache.key(self.model, messages, max_tokens=self.max_output_tokens,
-                           **self._params_key())
+        k = self._cache_key(messages, "score", max_tokens=self.max_output_tokens)
         cached = self.cache.get(k)
         if cached is not None:
             return cached
         resp = self._create(model=self.model, messages=messages,
                             max_tokens=self.max_output_tokens, temperature=self.temperature)
         text = resp.choices[0].message.content or ""
-        self.cache.set(k, text)
+        self.cache.set(k, text, backend=self.BACKEND, call="score", model=self.model)
         return text
 
     def score(self, messages_list: list[list[dict]]) -> list[str]:
@@ -199,15 +268,14 @@ class TogetherClient:
         return out
 
     def complete_one(self, messages: list[dict], max_tokens: int = 64) -> str:
-        k = self.cache.key(self.model, messages, max_tokens=max_tokens, kind="complete",
-                           **self._params_key())
+        k = self._cache_key(messages, "complete", max_tokens=max_tokens)
         cached = self.cache.get(k)
         if cached is not None:
             return cached
         resp = self._create(model=self.model, messages=messages, max_tokens=max_tokens,
                             temperature=self.temperature)
         text = resp.choices[0].message.content or ""
-        self.cache.set(k, text)
+        self.cache.set(k, text, backend=self.BACKEND, call="complete", model=self.model)
         return text
 
     def complete(self, messages_list: list[list[dict]], max_tokens: int = 64) -> list[str]:
@@ -218,20 +286,24 @@ class TogetherClient:
 
     # --- optional: logprob-based True/False path -------------------------
     def classify_one(self, messages: list[dict], top_logprobs: int = 10) -> dict:
-        k = self.cache.key(self.model, messages, max_tokens=1,
-                           logprobs=top_logprobs, **self._params_key())
+        """Single-token classification with token logprobs.
+
+        The cache holds the API's RAW logprobs structure, not a flattened
+        {token: logprob} map; `_lp_content_to_top` runs on read. Caching the
+        parsed form (schema 1) meant any change to the extraction logic left
+        stale values behind an unchanged key.
+        """
+        k = self._cache_key(messages, "classify", max_tokens=1, logprobs=top_logprobs)
         cached = self.cache.get(k)
-        if cached is not None:
-            return json.loads(cached)
-        # Together returns logprobs nested in logprobs.content[*]; the SDK rejects
-        # top_logprobs as a kwarg, so request it via extra_body.
-        resp = self._create(model=self.model, messages=messages, max_tokens=1,
-                            temperature=self.temperature,
-                            extra_body={"logprobs": True, "top_logprobs": top_logprobs})
-        payload = {"text": resp.choices[0].message.content or "",
-                   "top_logprobs": _extract_top_logprobs(resp.choices[0])}
-        self.cache.set(k, json.dumps(payload, ensure_ascii=False))
-        return payload
+        if cached is None:
+            # Together returns logprobs nested in logprobs.content[*]; the SDK rejects
+            # top_logprobs as a kwarg, so request it via extra_body.
+            resp = self._create(model=self.model, messages=messages, max_tokens=1,
+                                temperature=self.temperature,
+                                extra_body={"logprobs": True, "top_logprobs": top_logprobs})
+            cached = json.dumps(_raw_logprobs_payload(resp.choices[0]), ensure_ascii=False)
+            self.cache.set(k, cached, backend=self.BACKEND, call="classify", model=self.model)
+        return _parse_logprobs_payload(cached)
 
     def classify(self, messages_list: list[list[dict]]) -> list[dict]:
         out = [self.classify_one(m) for m in messages_list]
@@ -247,6 +319,15 @@ class TogetherClient:
         return resp.choices[0].message.content or ""
 
 
+class ResponseShapeError(ValueError):
+    """A model response did not have the structure the extraction code expects.
+
+    Raised instead of returning an empty result: under schema 1 these were
+    swallowed, turned into a missing logprob, and silently became a neutral
+    p=0.5 in the reported metrics with no record that it had happened.
+    """
+
+
 def _lp_content_to_top(first: dict) -> dict:
     """Given a single logprobs.content[*] entry (dict), return {token: logprob}
     including the chosen token."""
@@ -255,52 +336,78 @@ def _lp_content_to_top(first: dict) -> dict:
     return top
 
 
-def _extract_top_logprobs(choice) -> dict:
-    """Top-token logprobs from a (sync) chat choice object: logprobs.content[0]."""
-    try:
-        lp = choice.logprobs
-        content = lp.get("content") if isinstance(lp, dict) else lp.content
-        first = content[0]
-        first = first if isinstance(first, dict) else first.model_dump()
-        return _lp_content_to_top(first)
-    except Exception:
-        return {}
+def _as_dict(obj):
+    """Normalize an SDK model / dict / None into a plain dict."""
+    if obj is None or isinstance(obj, dict):
+        return obj
+    for attr in ("model_dump", "dict"):
+        fn = getattr(obj, attr, None)
+        if callable(fn):
+            return fn()
+    raise ResponseShapeError(f"cannot normalize {type(obj).__name__} into a dict")
+
+
+def _raw_logprobs_payload(choice) -> dict:
+    """The RAW logprobs structure for one sync chat choice, stored verbatim.
+
+    No flattening happens here — that is `_lp_content_to_top`'s job, and it runs
+    on read so the cached value never depends on the parser's current shape.
+    """
+    lp = _as_dict(choice.logprobs)
+    if lp is None:
+        raise ResponseShapeError("response carried no logprobs (was logprobs=True sent?)")
+    content = lp.get("content")
+    if not content:
+        raise ResponseShapeError("logprobs.content was empty")
+    return {"text": choice.message.content or "", "content0": _as_dict(content[0])}
+
+
+def _parse_logprobs_payload(raw: str) -> dict:
+    """Read-time parse of a cached classify payload -> {text, top_logprobs}."""
+    payload = json.loads(raw)
+    return {"text": payload.get("text", ""),
+            "top_logprobs": _lp_content_to_top(payload["content0"])}
+
+
+def top_logprobs_from_choice(choice) -> dict:
+    """{token: logprob} for the first generated token of a sync chat choice.
+
+    Raises ResponseShapeError if the response carried no usable logprobs, rather
+    than returning {} and letting the caller silently fall back to p=0.5.
+    """
+    return _lp_content_to_top(_raw_logprobs_payload(choice)["content0"])
+
+
+def _batch_body(obj: dict) -> dict:
+    """The response body inside a Batch-API output line, whichever nesting it uses."""
+    for path in (("response", "body"), ("body",), ()):
+        node = obj
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = node[key]
+        if isinstance(node, dict) and "choices" in node:
+            return node
+    raise ResponseShapeError(f"no 'choices' found in batch line (keys: {sorted(obj)[:6]})")
 
 
 def _extract_top_logprobs_obj(obj: dict) -> dict:
     """Top-token logprobs from a batch-output line (nested dicts)."""
-    body = obj.get("response", {})
-    body = body.get("body") if isinstance(body, dict) else None
-    body = body or obj.get("body") or obj
-    try:
-        first = body["choices"][0]["logprobs"]["content"][0]
-        return _lp_content_to_top(first)
-    except Exception:
-        return {}
+    content = _batch_body(obj)["choices"][0].get("logprobs", {}).get("content")
+    if not content:
+        raise ResponseShapeError("batch line carried no logprobs.content")
+    return _lp_content_to_top(content[0])
 
 
 def _extract_content(obj: dict) -> str:
-    """Pull the assistant content out of a batch-output line, defensively."""
-    for path in (("response", "body"), ("body",), ()):
-        node = obj
-        ok = True
-        for key in path:
-            if isinstance(node, dict) and key in node:
-                node = node[key]
-            else:
-                ok = False
-                break
-        if ok and isinstance(node, dict) and "choices" in node:
-            try:
-                return node["choices"][0]["message"]["content"] or ""
-            except Exception:
-                pass
-    return ""
+    """Pull the assistant content out of a batch-output line."""
+    return _batch_body(obj)["choices"][0]["message"]["content"] or ""
 
 
 class TogetherBatchClient:
     """Together Batch API backend with the same score(messages_list) interface
-    as TogetherClient and the SAME cache keys, so results are interchangeable.
+    as TogetherClient.
 
     For a list of message-sets it: serves cached rows for free, writes the
     uncached ones to a JSONL (one request per row, custom_id = index), uploads
@@ -308,6 +415,12 @@ class TogetherBatchClient:
     completion, downloads the output, reconciles by custom_id, and routes any
     failed/missing rows to empty output (-> parse-fail/neutral-50 in the
     predictor) while logging the failure count.
+
+    Cache keys are NOT shared with TogetherClient. Schema 1 shared them on the
+    theory that results "carry over between backends"; in practice the two
+    serving paths can answer the same prompt differently, so sharing meant the
+    later run silently overwrote the earlier one's value. Backend is now part of
+    the key, and failed rows are never written, so a retry actually retries.
     """
 
     def __init__(self, model: str, cache: ResponseCache | None = None,
@@ -324,18 +437,20 @@ class TogetherBatchClient:
         self.max_wait = max_wait
         self.error_count = 0          # rows that failed / returned no output
         self.error_samples = []       # a few (custom_id, error) for logging
+        self.shape_errors = []        # (custom_id, reason) for malformed output lines
         self.n_submitted = 0          # rows actually sent to the batch
         self.last_batch_seconds = 0.0
         self._client = None
 
-    # cache key identical to TogetherClient.score_one
+    BACKEND = "batch"
+
     def _params_key(self) -> dict:
         return {"temperature": self.temperature, "reasoning_effort": self.reasoning_effort,
                 "extra": self.extra_create_kwargs}
 
     def _key(self, messages: list[dict]) -> str:
-        return self.cache.key(self.model, messages, max_tokens=self.max_output_tokens,
-                              **self._params_key())
+        return self.cache.key(self.model, messages, backend=self.BACKEND, call="score",
+                              max_tokens=self.max_output_tokens, **self._params_key())
 
     def _body(self, messages: list[dict]) -> dict:
         body = {"model": self.model, "messages": messages,
@@ -369,10 +484,10 @@ class TogetherBatchClient:
         return body
 
     def _key_classify(self, messages: list[dict]) -> str:
-        return self.cache.key(self.model, messages, max_tokens=1, logprobs=10,
-                              **self._params_key())
+        return self.cache.key(self.model, messages, backend=self.BACKEND, call="classify",
+                              max_tokens=1, logprobs=10, **self._params_key())
 
-    def _run(self, uncached, results, key_fn, body_fn, extract_fn) -> None:
+    def _run(self, uncached, results, key_fn, body_fn, extract_fn, call) -> None:
         import json as _json
         import tempfile
         client = self._ensure_client()
@@ -412,31 +527,37 @@ class TogetherBatchClient:
                 if not line:
                     continue
                 obj = _json.loads(line)
-                output[str(obj.get("custom_id"))] = extract_fn(obj)
+                cid = str(obj.get("custom_id"))
+                try:
+                    output[cid] = extract_fn(obj)
+                except (ResponseShapeError, KeyError, IndexError, TypeError) as e:
+                    # Malformed line: record WHY. Do not store it — see below.
+                    self.shape_errors.append((cid, f"{type(e).__name__}: {e}"))
 
         errors = {}
         err_id = getattr(batch, "error_file_id", None)
         if err_id:
-            try:
-                for line in self._download_text(err_id).splitlines():
-                    obj = _json.loads(line.strip()) if line.strip() else None
-                    if obj:
-                        errors[str(obj.get("custom_id"))] = obj
-            except Exception:
-                pass
+            for line in self._download_text(err_id).splitlines():
+                obj = _json.loads(line.strip()) if line.strip() else None
+                if obj:
+                    errors[str(obj.get("custom_id"))] = obj
 
         for cid, (idx, messages) in {str(i): (i, m) for i, m in uncached}.items():
             val = output.get(cid)
-            if not val:                           # missing or explicitly errored
+            if not val:                           # missing, errored, or malformed
                 self.error_count += 1
                 if len(self.error_samples) < 5:
                     self.error_samples.append((cid, errors.get(cid, "no output")))
-                val = ""
-            self.cache.set(key_fn(messages), val)
+                # NOT cached: schema 1 stored "" here, which was then served as a
+                # cache HIT forever, permanently feeding a neutral p=0.5 into the
+                # metrics. A miss must stay a miss so a rerun retries the row.
+                results[idx] = ""
+                continue
+            self.cache.set(key_fn(messages), val, backend=self.BACKEND,
+                           call=call, model=self.model)
             results[idx] = val
-        self.cache.flush()
 
-    def _serve(self, messages_list, key_fn, body_fn, extract_fn):
+    def _serve(self, messages_list, key_fn, body_fn, extract_fn, call):
         results = [None] * len(messages_list)
         uncached = []
         for i, messages in enumerate(messages_list):
@@ -446,29 +567,38 @@ class TogetherBatchClient:
             else:
                 uncached.append((i, messages))
         if uncached:
-            self._run(uncached, results, key_fn, body_fn, extract_fn)
+            self._run(uncached, results, key_fn, body_fn, extract_fn, call)
         return [r if r is not None else "" for r in results]
 
     def score(self, messages_list: list[list[dict]]) -> list[str]:
-        return self._serve(messages_list, self._key, self._body, _extract_content)
+        return self._serve(messages_list, self._key, self._body, _extract_content, "score")
 
     def classify(self, messages_list: list[list[dict]]) -> list[dict]:
+        """Cached value is the RAW logprobs structure; flattening happens here, on
+        read, so a change to the parser can never leave stale values behind an
+        unchanged key."""
         import json as _json
-        raw = self._serve(messages_list, self._key_classify, self._body_classify,
-                          lambda obj: _json.dumps(_extract_top_logprobs_obj(obj)))
-        return [{"top_logprobs": _json.loads(r) if r else {}} for r in raw]
+        raw = self._serve(
+            messages_list, self._key_classify, self._body_classify,
+            lambda obj: _json.dumps({"text": _extract_content(obj),
+                                     "content0": _batch_body(obj)["choices"][0]
+                                                 ["logprobs"]["content"][0]},
+                                    ensure_ascii=False),
+            "classify")
+        return [_parse_logprobs_payload(r) if r else {"text": "", "top_logprobs": {}}
+                for r in raw]
 
     def complete(self, messages_list: list[list[dict]], max_tokens: int = 64) -> list[str]:
         def key_fn(m):
-            return self.cache.key(self.model, m, max_tokens=max_tokens, kind="complete",
-                                  **self._params_key())
+            return self.cache.key(self.model, m, backend=self.BACKEND, call="complete",
+                                  max_tokens=max_tokens, **self._params_key())
 
         def body_fn(m):
             b = {"model": self.model, "messages": m, "max_tokens": max_tokens,
                  "temperature": self.temperature}
             b.update(self.extra_create_kwargs)
             return b
-        return self._serve(messages_list, key_fn, body_fn, _extract_content)
+        return self._serve(messages_list, key_fn, body_fn, _extract_content, "complete")
 
     @property
     def avg_latency(self) -> float:
