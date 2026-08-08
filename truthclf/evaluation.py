@@ -76,7 +76,7 @@ def calibrated_evaluation(val_probs, val_labels, test_probs, test_labels,
 # ---------------------------------------------------------------------------
 # Decision artifact: the fitted calibrator + tuned threshold, as a shippable file
 # ---------------------------------------------------------------------------
-ARTIFACT_SCHEMA = 1
+ARTIFACT_SCHEMA = 2
 
 
 class CalibratorModelMismatch(ValueError):
@@ -109,7 +109,10 @@ class DecisionArtifact:
     nll_diff_ci: list               # (point, lo, hi) for temperature - platt
     selected_by: str                # "margin" | "parsimony"
     schema: int = ARTIFACT_SCHEMA
-    created_at: str = ""
+
+    # No timestamp is stored. A wall-clock field makes every no-op regeneration
+    # produce a different file, so `git diff` stops distinguishing "the numbers
+    # changed" from "the script ran again". The write time is logged instead.
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -117,11 +120,18 @@ class DecisionArtifact:
         return d
 
     def save(self, path: str) -> str:
+        """Write the artifact. Deterministic: identical inputs -> identical bytes."""
+        import datetime
         import json
+        import logging
         import os
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2, sort_keys=True)
+            f.write("\n")
+        logging.getLogger(__name__).info(
+            "wrote calibrator artifact %s for %s at %s", path, self.model,
+            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
         return path
 
     @classmethod
@@ -132,7 +142,8 @@ class DecisionArtifact:
         if d.get("schema") != ARTIFACT_SCHEMA:
             raise ValueError(
                 f"{path}: artifact schema {d.get('schema')} != expected "
-                f"{ARTIFACT_SCHEMA}; refit rather than reinterpreting it")
+                f"{ARTIFACT_SCHEMA}; refit rather than reinterpreting it "
+                "(schema 2 dropped the created_at field)")
         return cls(**d)
 
     def check_model(self, model: str) -> None:
@@ -157,7 +168,6 @@ def build_artifact(evaluation: CalibratedEvaluation, model: str, fitted_on: str,
                    n_val: int, val_probs=None, val_labels=None,
                    objective="balanced_accuracy") -> DecisionArtifact:
     """Package a CalibratedEvaluation into a shippable DecisionArtifact."""
-    import datetime
     cal = evaluation.calibrator
     cands = {}
     if val_probs is not None and val_labels is not None:
@@ -176,6 +186,4 @@ def build_artifact(evaluation: CalibratedEvaluation, model: str, fitted_on: str,
         candidate_val_nll=cands,
         nll_diff_ci=[float(x) for x in cal.get("nll_diff_ci", ())],
         selected_by=cal.get("selected_by", "unknown"),
-        created_at=datetime.datetime.now(datetime.timezone.utc)
-                           .isoformat(timespec="seconds"),
     )
