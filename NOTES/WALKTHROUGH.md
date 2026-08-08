@@ -347,13 +347,14 @@ of `evaluate_finetuned.py` states serverless serving was unavailable for this
 base, `docs/decisions.md:281` records the same, and the script provisions an
 endpoint unconditionally when rows are missing.
 
-**Inferring:** whether that is still true today I cannot determine from the repo.
-Provider serverless-LoRA support changes. **The call that settles it:** a single
-`client.chat.completions.create(model=FT, max_tokens=1, ...)` with no endpoint
-running — 200 means serverless works, a 404/"model not available" means it does
-not. `client.endpoints.list_hardware(model=FT)` (already used as a preflight at
-[evaluate_finetuned.py:97](../scripts/evaluate_finetuned.py#L97)) tells you whether a
-dedicated endpoint is *possible*, not whether serverless is.
+**Settled by probe on 2026-08-09 — no longer an inference.** One
+`chat.completions.create(model=FT, max_tokens=1)` with nothing provisioned returns
+**HTTP 400, `code: model_not_available`**: *"Unable to access non-serverless model
+... create and start a new dedicated endpoint"*. Serverless is **not** available
+for this LoRA. The error is deterministic and correctly non-retryable.
+`endpoints.list_hardware(model=FT)` returns `2x_nvidia_h100_80gb_sxm`,
+availability `available` — a dedicated endpoint is possible, which is the other
+question. See docs/decisions.md, 2026-08-09.
 
 ### If dedicated
 - **Hardware:** `2x_nvidia_h100_80gb_sxm` ([:43](../scripts/evaluate_finetuned.py#L43)), `min_replicas=max_replicas=1` ([:114](../scripts/evaluate_finetuned.py#L114)).

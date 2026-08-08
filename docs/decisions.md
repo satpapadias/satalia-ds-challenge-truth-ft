@@ -526,3 +526,40 @@ zero-shot logprob run still moved +0.0108.
 
 **Fixed** by delegating to `sklearn.metrics.average_precision_score`, with
 regression tests covering the all-tied case and order permutation.
+
+---
+
+## 2026-08-09 — Serverless LoRA serving: settled by direct probe
+
+**Question:** can Together serve `makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d`
+via serverless inference, with no dedicated endpoint running? The repo asserted
+"no" from a 2026-06 observation; NOTES/WALKTHROUGH.md flagged that as unverified
+and named the call that would settle it.
+
+**Answer: NO.** One `chat.completions.create(model=FT, max_tokens=1)` with
+nothing provisioned returns **HTTP 400**, verbatim:
+
+```json
+{"error": {"message": "Unable to access non-serverless model makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d. Please visit https://api.together.ai/models/... to create and start a new dedicated endpoint for the model.",
+           "type": "invalid_request_error", "param": null, "code": "model_not_available"}}
+```
+
+`code: model_not_available` and the phrase "non-serverless model" are explicit:
+this is a provider capability statement, not a transient error, not a cold start,
+and not a permissions problem. It is deterministic and correctly classified as
+non-retryable by `llm.RETRYABLE_ERRORS` (BadRequestError is excluded).
+
+**`endpoints.list_hardware(model=FT)`** returns one option —
+`2x_nvidia_h100_80gb_sxm` (gpu_count=2, h100-80gb), `availability: available`.
+That confirms a DEDICATED endpoint is possible, which is a different question and
+was never in doubt.
+
+**Consequence for the next phase:** the fine-tuned predictor cannot be a
+stateless container that calls an API. Serving it requires either a persistently
+running dedicated endpoint (always-on cost, no autoscale-to-zero at
+min_replicas=1) or accepting multi-minute provisioning on the first request.
+Sub-second response with no human present is not achievable with the current
+artifact on this provider without an always-on endpoint.
+
+**Cost of settling it:** one 400 response, no tokens billed. Nothing was
+provisioned. `endpoints.list()` confirms 0 endpoints for this model.
