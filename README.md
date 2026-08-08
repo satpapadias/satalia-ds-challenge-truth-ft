@@ -91,9 +91,13 @@ python3 -m pip install -e ".[viz,dev]"
 
 Set your Together API key in a project-root `.env` (loaded automatically):
 
+```bash
+cp .env.example .env      # then fill in TOGETHER_API_KEY
 ```
-TOGETHER_API_KEY=your_key_here
-```
+
+`.env` is gitignored. A key is needed only for the scripts that call Together;
+the walkthrough notebook, the test suite, `scripts/analyze_dataset.py` and the
+offline regeneration path below all run without one.
 
 Locked versions (see `uv.lock` for the full graph): Python 3.12.13, numpy 2.5.1,
 scikit-learn 1.9.0, scipy 1.18.0, statsmodels 0.14.6, pandas 3.0.5,
@@ -102,6 +106,39 @@ together 2.30.0, tiktoken 0.13.0, python-dotenv, matplotlib.
 scikit-learn, scipy and statsmodels are **required, not optional**: the metrics,
 calibration, threshold-tuning and splitting code defers to their reference
 implementations instead of hand-rolling numerical routines.
+
+---
+
+## The response cache
+
+LLM responses are cached on disk so reruns are free. There are two stores, and
+the distinction matters on a fresh clone:
+
+| | tracked? | what it is |
+|---|---|---|
+| `.llm_cache.json` | **yes** | the schema-1 archive — the record of what was actually spent, and the source the adopted numbers replay from |
+| `.llm_cache/` | **no — gitignored** | the schema-2 diskcache the code reads at runtime (~15 MB SQLite) |
+
+**A fresh clone therefore has no `.llm_cache/`.** Rebuild it, or bypass it:
+
+```bash
+# Option A — rebuild the runtime cache (recommended)
+python3 scripts/migrate_cache.py --apply      # free: re-keys the tracked v1 archive
+python3 scripts/refetch_quarantined.py        # ~$0.33, needs TOGETHER_API_KEY
+
+# Option B — no key, no cost: replay the tracked archive directly
+python3 scripts/regenerate_results.py --source archive --explainer-source archive
+```
+
+Option B reproduces the adopted record in about 13 seconds with no API calls.
+The entrypoint **fails with exit code 1** and names these commands if the cache
+is missing — it will not silently produce numbers from an incomplete cache.
+
+Why the split: schema 1 keyed on `(model, messages, params)` only, so sync and
+Batch-API responses shared a key and whichever ran last won. Schema 2 adds the
+serving backend, the call kind and a schema version, stores raw responses, and
+never caches failures. `scripts/migrate_cache.py` documents the mapping between
+them.
 
 ---
 
@@ -184,6 +221,26 @@ ft = FinetunedPredictor(base_model="google/gemma-4-31B-it", variant="full")
 ft.fine_tune(training_dataset)                    # speaker-disjoint train/val split made internally
 preds = ft.predict(test_rows, labels=test_labels)  # same interface as zero-shot
 ```
+
+**(b2) Ship the calibrator with a predictor**
+
+`predict()` returns RAW probabilities thresholded at 0.5 unless you give it a
+calibrator. The fitted calibrator and tuned threshold are written as versioned
+artifacts by the evaluation entrypoint:
+
+```python
+from truthclf.predictors import ZeroShotPredictor
+pred = ZeroShotPredictor(
+    model="google/gemma-4-31B-it", variant="full", client=client,
+    calibrator="results/calibrators/zero_shot_decision_baseline.json")
+res = pred.predict(points)      # calibrated probabilities, tuned threshold
+```
+
+The artifact records the calibrator parameters, the threshold and its objective,
+the split it was fitted on, both candidates' validation NLL, the margin-rule CI,
+and the model id. Applying it to a different model raises
+`CalibratorModelMismatch` — a calibrator is specific to the probability scale of
+the model that produced it, and a silent mismatch still looks like probabilities.
 
 **(c) Explain a set of predictions**
 ```bash
