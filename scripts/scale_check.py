@@ -12,6 +12,11 @@ reasoning_effort='low' + a larger budget; Qwen/Gemma disable thinking.
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from truthclf import data, prompts, llm, experiments
 
 DATA_PATH = "data.csv"

@@ -8,6 +8,11 @@ Expected: accuracy ~0.668, ECE ~0.061 equal-mass (NOT the score-mode 0.700).
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 
 from truthclf import data, experiments, calibration, threshold, metrics

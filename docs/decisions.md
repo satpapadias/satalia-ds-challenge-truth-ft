@@ -339,7 +339,7 @@ passed (reuses `metrics.py`).
 and the wrong granularity for field-structured metadata; occlusion at the field
 level is the right unit here.
 
-Aggregate (`explain_report.py`, ~300 test rows) quantifies the speaker/source
+Aggregate (`run_explainer.py`, ~300 test rows) quantifies the speaker/source
 shortcuts tracked since EDA. Demonstrated on zero-shot serverless (~$0.13, batched).
 
 ### Faithfulness-matching rule (exact criterion)

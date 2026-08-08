@@ -8,6 +8,11 @@ that removing a field produces a graded shift rather than a 0/1 jump.
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 import random
 

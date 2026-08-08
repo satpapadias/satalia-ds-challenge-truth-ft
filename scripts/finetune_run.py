@@ -5,11 +5,16 @@ invoked with --launch; without the flag it prints the config and exits. SFT is t
 default method; DPO is not used. The resulting LoRA adapter is served via a
 dedicated endpoint for evaluation (see README and evaluate_finetuned.py).
 
-    python3 finetune_run.py            # dry run: print the config, do nothing
-    python3 finetune_run.py --launch   # create the job, then poll to completion
+    python3 scripts/finetune_run.py            # dry run: print the config, do nothing
+    python3 scripts/finetune_run.py --launch   # create the job, then poll to completion
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import os

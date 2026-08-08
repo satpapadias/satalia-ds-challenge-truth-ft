@@ -10,6 +10,11 @@ Prints the estimate and STOPS — approval required before any full run.
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from truthclf import data, prompts, llm
 
 DATA_PATH = "data.csv"

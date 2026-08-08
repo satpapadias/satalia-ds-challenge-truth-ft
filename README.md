@@ -300,7 +300,21 @@ truthclf/
     finetuned.py FinetunedPredictor (fine_tune + predict)
 tests/           unit tests (LLM calls mocked — deterministic, free)
 predict.py       top-level entry point: zero-shot predict on a set
-scripts/         full reproduce flow (EDA, full-test eval, calibration, fine-tune, eval, explain)
+scripts/         every documented command lives here; run them from the project root
+  analyze_dataset.py       exploratory data analysis (no model calls)
+  estimate_cost.py         token/cost estimate before any full run (no model calls)
+  scale_check.py           200-row model bake-off across candidate bases
+  benchmark_zeroshot.py    zero-shot model comparison, full set, bootstrap CIs
+  zeroshot_baseline.py     calibrated zero-shot logprob baseline on the test split
+  evaluate_zeroshot.py     threshold tuning + calibration + ablation + abstention
+  finetune_prep.py         build/validate/upload the SFT data
+  finetune_run.py          launch the LoRA SFT job and poll to completion
+  evaluate_finetuned.py    fine-tuned vs zero-shot paired comparison
+  run_explainer.py         occlusion + rationale + cross-check, aggregate report
+  explain_analysis.py      explainer follow-ups from cache (no new API calls)
+  migrate_cache.py         one-shot schema-1 -> schema-2 response-cache migration
+  refetch_quarantined.py   refetch cache entries the migration quarantined
+  regenerate_results.py    recompute the adopted record; writes the results JSON
 notebooks/       00_results_walkthrough.ipynb — guided, import-and-display tour
 results/         summary.json — recorded headline numbers (for the walkthrough)
 data.csv         the provided challenge dataset

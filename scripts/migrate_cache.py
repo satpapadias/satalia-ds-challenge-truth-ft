@@ -107,12 +107,12 @@ def _requests():
                 dict(max_tokens=64, kind="complete", **params)
 
     # --- batch entrypoints
-    for m in (QWEN, GEMMA):                                    # fulltest_run.py
+    for m in (QWEN, GEMMA):                                    # benchmark_zeroshot.py
         for v in ("statement_only", "full"):
             yield from score(m, clean, v, "batch")
     yield from classify(GEMMA, val + test, "full", "batch")    # zeroshot_baseline, eval_finetune
     yield from score(GEMMA, val + test, "full", "batch")       # eval_finetune, phase_a_report
-    yield from score(GEMMA, occl, "full", "batch")             # explain_report.py
+    yield from score(GEMMA, occl, "full", "batch")             # run_explainer.py
     yield from complete(GEMMA, sample, "full", "batch")
     # --- sync entrypoints
     for m in llm.PRICING:                                      # scale_check.py

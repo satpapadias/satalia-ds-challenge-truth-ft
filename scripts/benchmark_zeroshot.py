@@ -12,6 +12,11 @@ candidate bases. Responses are cached so reruns are free.
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from truthclf import experiments, metrics
 
 SCHEME = "primary"
