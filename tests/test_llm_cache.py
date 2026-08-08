@@ -155,3 +155,79 @@ def test_extract_content_reads_each_nesting_shape():
     body = {"choices": [{"message": {"content": "42"}}]}
     for line in ({"response": {"body": body}}, {"body": body}, body):
         assert llm._extract_content(line) == "42"
+
+
+# --------------------------------------------------------------------------
+# A set is processed concurrently, and concurrency does not corrupt the cache.
+# --------------------------------------------------------------------------
+class _SlowClient:
+    """Stand-in whose calls sleep, so serial and concurrent are distinguishable."""
+
+    def __init__(self, delay=0.05):
+        self.delay = delay
+        self.calls = 0
+
+    def create(self, **kw):
+        import threading
+        import time as _t
+        _t.sleep(self.delay)
+        with threading.Lock():
+            self.calls += 1
+        idx = kw["messages"][-1]["content"]
+        return type("R", (), {"choices": [type("C", (), {
+            "message": type("M", (), {"content": idx})()})()]})()
+
+
+def _client(tmp_path, workers, delay=0.05):
+    c = llm.TogetherClient("m", cache=llm.ResponseCache(str(tmp_path / f"c{workers}")),
+                           max_workers=workers)
+    c._client = type("X", (), {"chat": type("Y", (), {"completions": _SlowClient(delay)})()})()
+    c._ensure_client = lambda: c._client
+    return c
+
+
+def _msgs(n):
+    return [[{"role": "user", "content": str(i)}] for i in range(n)]
+
+
+def test_score_over_a_set_is_concurrent(tmp_path):
+    """16 calls at 50 ms each: serial would take >=0.8 s, concurrent well under."""
+    import time
+    n = 16
+    t0 = time.perf_counter()
+    out = _client(tmp_path / "par", workers=16).score(_msgs(n))
+    parallel = time.perf_counter() - t0
+    assert out == [str(i) for i in range(n)], "order must be preserved"
+    assert parallel < 0.40, f"took {parallel:.2f}s — looks serial, not concurrent"
+
+
+def test_max_workers_one_is_serial(tmp_path):
+    out = _client(tmp_path / "ser", workers=1, delay=0.0).score(_msgs(5))
+    assert out == [str(i) for i in range(5)]
+
+
+def test_results_stay_aligned_with_inputs_under_concurrency(tmp_path):
+    c = _client(tmp_path / "align", workers=8, delay=0.01)
+    out = c.score(_msgs(40))
+    assert out == [str(i) for i in range(40)], "ex.map must keep input order"
+
+
+def test_concurrent_writes_all_reach_the_cache(tmp_path):
+    c = _client(tmp_path / "w", workers=8, delay=0.01)
+    c.score(_msgs(40))
+    assert len(c.cache) == 40, "every concurrent write must be durable"
+    again = _client(tmp_path / "w", workers=8, delay=0.01)
+    assert again.score(_msgs(40)) == [str(i) for i in range(40)]
+    assert again._client.chat.completions.calls == 0, "second pass must be all hits"
+
+
+def test_an_explicitly_passed_empty_cache_is_honoured(tmp_path):
+    """ResponseCache defines __len__, so an empty one is falsy. `cache or
+    ResponseCache()` therefore discarded a caller's fresh cache and silently
+    used the project default — writing to the wrong store."""
+    rc = llm.ResponseCache(str(tmp_path / "mine"))
+    assert len(rc) == 0
+    for client in (llm.TogetherClient("m", cache=rc),
+                   llm.TogetherBatchClient("m", cache=rc)):
+        assert client.cache is rc, "an empty cache must not be replaced by the default"
+        assert client.cache.path == str(tmp_path / "mine")

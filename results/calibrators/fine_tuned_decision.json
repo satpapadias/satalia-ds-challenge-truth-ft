@@ -10,7 +10,7 @@
     "platt": 0.6406786282019709,
     "temperature": 0.642722598288054
   },
-  "created_at": "2026-08-08T15:02:07+00:00",
+  "created_at": "2026-08-08T15:08:40+00:00",
   "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
   "model": "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d",
   "n_val": 1917,

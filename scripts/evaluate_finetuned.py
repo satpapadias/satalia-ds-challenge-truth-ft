@@ -47,7 +47,7 @@ FT_CACHE, RESULTS = "ft_eval_cache.json", "ft_eval_results.json"
 EP_NAME = "truth-gemma-ft-eval"
 PROVISION_DEADLINE = 20 * 60
 MAX_UPTIME_MIN = 30                 # hard kill switch: delete + abort past this
-WORKERS = 16
+WORKERS = 16                        # also the TogetherClient default; see llm._map
 
 
 def hr(t):

@@ -63,7 +63,8 @@ RETRYABLE_ERRORS = _retryable_errors()
 def make_client(model: str, cache=None, backend: str = "sync", **overrides):
     """Build a client for `model` using its registered config (or the default).
 
-    backend="sync"  -> TogetherClient (per-row, cached) for dev/notebook/interactive
+    backend="sync"  -> TogetherClient (concurrent over a set, cached) for
+                       dev/notebook/interactive use
     backend="batch" -> TogetherBatchClient (Together Batch API) for full-test runs
 
     Both share the same cache and cache keys, so results carry over between them.
@@ -229,9 +230,16 @@ class TogetherClient:
     def __init__(self, model: str, cache: ResponseCache | None = None,
                  max_output_tokens: int = 8, temperature: float = 0.0,
                  max_retries: int = 4, backoff_base: float = 1.0, timeout: float = 120.0,
-                 reasoning_effort: str | None = None, extra_create_kwargs: dict | None = None):
+                 reasoning_effort: str | None = None, extra_create_kwargs: dict | None = None,
+                 max_workers: int = 16):
         self.model = model
-        self.cache = cache or ResponseCache()
+        # A set of points is fetched CONCURRENTLY, not one call after another.
+        # max_workers=1 restores strictly serial behaviour.
+        self.max_workers = max(1, int(max_workers))
+        # `is None`, NOT `or`: ResponseCache defines __len__, so an EMPTY cache is
+        # falsy and `cache or ResponseCache()` silently swapped a caller's
+        # fresh cache for the project default.
+        self.cache = ResponseCache() if cache is None else cache
         self.max_output_tokens = max_output_tokens
         self.temperature = temperature
         self.max_retries = max_retries
@@ -303,6 +311,22 @@ class TogetherClient:
 
     BACKEND = "sync"
 
+    def _map(self, fn, items: list):
+        """Apply `fn` across a set, concurrently, preserving input order.
+
+        The spec requires each component to process a SET efficiently; a list
+        comprehension over single calls is a serial round-trip per point. Only
+        cache MISSES reach the network, and diskcache is safe for concurrent
+        readers and writers, so no lock is needed around cache access — the
+        counters below are the only shared mutable state and are incremented
+        under the GIL on whole ints.
+        """
+        if self.max_workers == 1 or len(items) <= 1:
+            return [fn(x) for x in items]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            return list(ex.map(fn, items))         # ex.map preserves order
+
     def _cache_key(self, messages: list[dict], call: str, **params) -> str:
         return self.cache.key(self.model, messages, backend=self.BACKEND, call=call,
                               **params, **self._params_key())
@@ -320,7 +344,7 @@ class TogetherClient:
         return text
 
     def score(self, messages_list: list[list[dict]]) -> list[str]:
-        out = [self.score_one(m) for m in messages_list]
+        out = self._map(self.score_one, messages_list)
         self.cache.flush()
         return out
 
@@ -337,7 +361,7 @@ class TogetherClient:
 
     def complete(self, messages_list: list[list[dict]], max_tokens: int = 64) -> list[str]:
         """Free-text generation (e.g. one-sentence rationales)."""
-        out = [self.complete_one(m, max_tokens) for m in messages_list]
+        out = self._map(lambda m: self.complete_one(m, max_tokens), messages_list)
         self.cache.flush()
         return out
 
@@ -363,7 +387,7 @@ class TogetherClient:
         return _parse_logprobs_payload(cached)
 
     def classify(self, messages_list: list[list[dict]]) -> list[dict]:
-        out = [self.classify_one(m) for m in messages_list]
+        out = self._map(self.classify_one, messages_list)
         self.cache.flush()
         return out
 
@@ -485,7 +509,10 @@ class TogetherBatchClient:
                  reasoning_effort: str | None = None, extra_create_kwargs: dict | None = None,
                  poll_interval: float = 30.0, max_wait: float = 14400.0):
         self.model = model
-        self.cache = cache or ResponseCache()
+        # `is None`, NOT `or`: ResponseCache defines __len__, so an EMPTY cache is
+        # falsy and `cache or ResponseCache()` silently swapped a caller's
+        # fresh cache for the project default.
+        self.cache = ResponseCache() if cache is None else cache
         self.max_output_tokens = max_output_tokens
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
