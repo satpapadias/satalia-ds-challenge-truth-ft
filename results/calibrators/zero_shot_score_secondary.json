@@ -10,7 +10,7 @@
     "platt": 0.6725751514496306,
     "temperature": 0.7063503688665905
   },
-  "created_at": "2026-08-08T15:08:40+00:00",
+  "created_at": "2026-08-08T15:15:58+00:00",
   "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
   "model": "google/gemma-4-31B-it",
   "n_val": 1917,

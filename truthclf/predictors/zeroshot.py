@@ -124,12 +124,13 @@ class ZeroShotPredictor(Predictor):
         preds = [1 if p >= self.threshold else 0 for p in probs]
         return None, probs, preds, parse_failures
 
-    def predict(self, rows, labels=None) -> PredictionResult:
+    def predict(self, points, labels=None) -> PredictionResult:
         if self.client is None:
             raise RuntimeError(
                 "ZeroShotPredictor has no client configured. Pass an LLM client "
                 "(e.g. truthclf.llm.TogetherClient) to make scored predictions."
             )
+        rows = points          # the spec (and FinetunedPredictor) name this `points`
         if self.use_logprobs:
             scores, probs, preds, parse_failures = self._predict_logprobs(rows)
         else:
