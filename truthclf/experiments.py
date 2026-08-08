@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import data, llm, metrics, calibration, threshold, selective
+from . import data, evaluation, llm, metrics, calibration, threshold, selective
 from .predictors import ZeroShotPredictor
 
 
@@ -138,7 +138,11 @@ def phase_a_eval(model="google/gemma-4-31B-it", variant="full", scheme="primary"
     vp, vy = run_on_rows(model, variant, val, scheme, backend="batch")
     tp, ty = run_on_rows(model, variant, test, scheme, backend="batch")
 
-    # --- threshold tuning (tuned on val raw probs, reported on test raw probs)
+    # --- threshold tuning on RAW probabilities.
+    # DELIBERATELY NOT the adopted pipeline: this table exists to show what
+    # threshold tuning alone buys, before any calibration. The reported record
+    # uses truthclf.evaluation.calibrated_evaluation (calibrate first, then tune
+    # on CALIBRATED validation probabilities) — see `official` below.
     thr_bal, _ = threshold.tune_threshold(vp, vy, "balanced_accuracy")
     thr_f1, _ = threshold.tune_threshold(vp, vy, "macro_f1")
     thr_cost, _ = threshold.tune_cost_threshold(vp, vy, c_fn=c_fn, c_fp=c_fp)
@@ -160,13 +164,10 @@ def phase_a_eval(model="google/gemma-4-31B-it", variant="full", scheme="primary"
          "ece": round(metrics.ece(ty, tp_cal), 3)},
     ])
 
-    # --- official baseline: calibrated probs + threshold tuned on calibrated val
-    vp_cal = list(calibration.apply(vp, cal))
-    thr_off, _ = threshold.tune_threshold(vp_cal, vy, "balanced_accuracy")
-    import numpy as np
-    off_preds = (np.asarray(tp_cal) >= thr_off).astype(int)
-    official = {"threshold": thr_off, "calibrator": cal,
-                "metrics": metrics.metric_bundle(ty, off_preds, tp_cal)}
+    # --- official baseline: the adopted pipeline, shared with every other caller
+    ev = evaluation.calibrated_evaluation(vp, vy, tp, ty, objective="balanced_accuracy")
+    official = {"threshold": ev.threshold, "calibrator": ev.calibrator,
+                "metrics": ev.metrics}
 
     return PhaseAResult(model, variant, vy, vp, ty, tp, tp_cal, thresholds, cal,
                         threshold_table, calibration_table, official)

@@ -13,9 +13,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
 
-from truthclf import data, experiments, calibration, threshold, metrics
+from truthclf import data, evaluation, experiments
 
 BASE = "google/gemma-4-31B-it"
 VARIANT = "full"
@@ -33,12 +32,8 @@ def main():
     vp, _ = experiments.run_on_rows(BASE, VARIANT, val, SCHEME, use_logprobs=True, backend="batch")
     tp, _ = experiments.run_on_rows(BASE, VARIANT, test, SCHEME, use_logprobs=True, backend="batch")
 
-    cal = calibration.fit_best(vp, vy)               # Platt/temperature fit on val
-    tpc = list(calibration.apply(tp, cal))
-    thr, _ = threshold.tune_threshold(list(calibration.apply(vp, cal)), vy,
-                                      "balanced_accuracy")
-    preds = (np.asarray(tpc) >= thr).astype(int)
-    m = metrics.metric_bundle(ty, preds, tpc)
+    ev = evaluation.calibrated_evaluation(vp, vy, tp, ty)
+    cal, thr, m = ev.calibrator, ev.threshold, ev.metrics
 
     print(f"Zero-shot logprob baseline — {BASE} [{VARIANT}], test n={len(ty)}")
     print(f"  calibrator={cal['method']}  threshold={thr:.3f}")

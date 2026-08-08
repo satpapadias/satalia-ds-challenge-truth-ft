@@ -135,8 +135,8 @@ def _offline_zeroshot_probs(rows):
     return pred.predict(rows).probs
 
 def _ft_probs(rows):
-    fc = json.load(open("ft_eval_cache.json"))
-    return [fc[str(r.row_id)] for r in rows]
+    from truthclf.predictors.finetuned import load_cached_probs
+    return load_cached_probs(rows)
 
 def fig_reliability():
     """Rendered from results/curves.json — the SAME record as slide 7's table.

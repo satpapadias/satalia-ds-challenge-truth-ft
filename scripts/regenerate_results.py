@@ -34,7 +34,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from truthclf import calibration, data, explain, llm, metrics as M, prompts, threshold  # noqa: E402
+from truthclf import calibration, data, evaluation, explain, llm, metrics as M, prompts  # noqa: E402
+from truthclf.predictors import finetuned  # noqa: E402
 from truthclf.predictors.zeroshot import parse_score, prob_from_logprobs  # noqa: E402
 
 G = "google/gemma-4-31B-it"
@@ -87,11 +88,7 @@ class ArchiveSource:
         self.data = json.load(open(path, encoding="utf-8"))
         self.misses = 0
 
-    @staticmethod
-    def _key(model, messages, **p):
-        return hashlib.sha256(json.dumps(
-            {"model": model, "messages": messages, "params": p},
-            sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    _key = staticmethod(llm.legacy_v1_key)     # frozen schema-1 format
 
     def score(self, r):
         v = self.data.get(self._key(G, prompts.build_messages(r, VARIANT, mode="score"),
@@ -152,17 +149,15 @@ def ece_block(y, p):
 
 
 def evaluate(vp, vy, tp, ty):
-    cal = calibration.fit_best(vp, vy, n_boot=1000, seed=0)
-    tpc = list(calibration.apply(tp, cal))
-    thr, _ = threshold.tune_threshold(list(calibration.apply(vp, cal)), vy,
-                                      "balanced_accuracy")
-    preds = (np.asarray(tpc) >= thr).astype(int)
-    return {"calibrator": cal["method"], "selected_by": cal["selected_by"],
+    """Adopted pipeline (truthclf.evaluation) plus the reporting extras."""
+    ev = evaluation.calibrated_evaluation(vp, vy, tp, ty, objective="balanced_accuracy")
+    cal = ev.calibrator
+    return {"calibrator": ev.method, "selected_by": ev.selected_by,
             "val_nll": cal["val_nll"], "nll_diff_ci": list(cal["nll_diff_ci"]),
-            "threshold": float(thr), "preds": preds.tolist(),
-            "probs_calibrated": [float(x) for x in tpc],
-            "metrics": M.metric_bundle(ty, preds, tpc),
-            "ece_detail": ece_block(ty, tpc),
+            "threshold": ev.threshold, "preds": ev.preds,
+            "probs_calibrated": ev.probs_calibrated,
+            "metrics": ev.metrics,
+            "ece_detail": ece_block(ty, ev.probs_calibrated),
             "ece_raw_uncalibrated": ece_block(ty, list(tp))}
 
 
@@ -267,13 +262,13 @@ def main():
     _, val, test = data.speaker_disjoint_3way(clean, 0.2, 0.2, 0, SCHEME)
     vy = [r.y(SCHEME) for r in val]
     ty = [r.y(SCHEME) for r in test]
-    ft = json.load(open("ft_eval_cache.json"))
+
 
     runs = {
         "a": ("zero_shot_score_secondary", score_probs(src, val), score_probs(src, test)),
         "b": ("zero_shot_decision_baseline", logprob_probs(src, val), logprob_probs(src, test)),
-        "c": ("fine_tuned_decision", [ft[str(r.row_id)] for r in val],
-              [ft[str(r.row_id)] for r in test]),
+        "c": ("fine_tuned_decision", finetuned.load_cached_probs(val),
+              finetuned.load_cached_probs(test)),
     }
     print(f"source (a/b/c) : {src.name}")
     print(f"source (explain): {exp_src.name}")

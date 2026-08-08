@@ -57,12 +57,7 @@ def _cfg(model):
     }
 
 
-def _v1_key(model, messages, **params):
-    """Reproduce the schema-1 key exactly (no cache_schema/backend/call fields)."""
-    import hashlib
-    blob = json.dumps({"model": model, "messages": messages, "params": params},
-                      sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+_v1_key = llm.legacy_v1_key                 # frozen schema-1 format, shared
 
 
 def _requests():

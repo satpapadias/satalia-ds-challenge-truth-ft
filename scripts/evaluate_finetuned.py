@@ -33,7 +33,7 @@ from threading import Lock
 import numpy as np
 
 import truthclf
-from truthclf import data, llm, calibration, threshold, metrics, prompts, experiments
+from truthclf import data, llm, evaluation, metrics, prompts, experiments
 from truthclf.predictors import ZeroShotPredictor
 from truthclf.predictors.zeroshot import prob_from_logprobs
 from together import Together
@@ -184,13 +184,9 @@ def ft_decision_probs(rows, c):
 
 
 def calibrated_eval(vp, vy, tp, ty):
-    cal = calibration.fit_best(vp, vy)
-    vpc = list(calibration.apply(vp, cal))
-    tpc = list(calibration.apply(tp, cal))
-    thr, _ = threshold.tune_threshold(vpc, vy, "balanced_accuracy")
-    preds = (np.asarray(tpc) >= thr).astype(int)
-    return {"calibrator": cal["method"], "threshold": float(thr),
-            "preds": preds.tolist(), "metrics": metrics.metric_bundle(ty, preds, tpc)}
+    ev = evaluation.calibrated_evaluation(vp, vy, tp, ty)
+    return {"calibrator": ev.method, "threshold": ev.threshold,
+            "preds": ev.preds, "metrics": ev.metrics}
 
 
 def main():

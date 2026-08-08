@@ -94,3 +94,30 @@ class FinetunedPredictor(Predictor):
 
     def rationale(self, rows, max_tokens=64):
         return self._delegate().rationale(rows, max_tokens=max_tokens)
+
+
+FT_PROB_CACHE = "ft_eval_cache.json"
+
+
+def load_cached_probs(rows, path: str = FT_PROB_CACHE) -> list:
+    """Per-row fine-tuned P(True), keyed by row_id, from the endpoint session.
+
+    The fine-tuned model is served on a short-lived dedicated endpoint, so its
+    predictions are persisted row-by-row rather than re-derived. This accessor is
+    the single reader; three call sites previously inlined the json.load and the
+    str(row_id) indexing, and a missing row silently became a KeyError deep in a
+    metric call.
+    """
+    import json as _json
+    import os as _os
+    if not _os.path.exists(path):
+        raise FileNotFoundError(
+            f"{path} not found — fine-tuned probabilities come from "
+            "scripts/evaluate_finetuned.py, which provisions a dedicated endpoint.")
+    with open(path, encoding="utf-8") as f:
+        cache = _json.load(f)
+    missing = [r.row_id for r in rows if str(r.row_id) not in cache]
+    if missing:
+        raise KeyError(f"{len(missing)} rows absent from {path} "
+                       f"(first few: {missing[:5]})")
+    return [cache[str(r.row_id)] for r in rows]

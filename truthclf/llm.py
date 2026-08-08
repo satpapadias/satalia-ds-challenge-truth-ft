@@ -201,6 +201,20 @@ class ResponseCache:
         return len(self._cache)
 
 
+def legacy_v1_key(model: str, messages: list[dict], **params) -> str:
+    """Reproduce a SCHEMA-1 cache key exactly: sha256 over (model, messages, params)
+    with no cache_schema/backend/call fields.
+
+    Frozen format, kept because `.llm_cache.json` is still the archive the adopted
+    (a)/(b)/(c) numbers replay from. It lived in two independent copies — the
+    migration script and the results regenerator — either of which drifting would
+    have silently stopped that replay from reproducing the record.
+    """
+    blob = json.dumps({"model": model, "messages": messages, "params": params},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _sdk_version() -> str:
     """Version string recorded in each cache envelope, for provenance."""
     try:
