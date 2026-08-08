@@ -22,8 +22,6 @@ from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
 
 # USD per 1,000,000 tokens. Verified 2026-06-22 from together.ai pricing.
 PRICING = {
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Reference": {"input": 0.18, "output": 0.18},
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo":     {"input": 0.18, "output": 0.18},
     "meta-llama/Llama-3.3-70B-Instruct-Turbo":         {"input": 1.04, "output": 1.04},
     "openai/gpt-oss-20b":                              {"input": 0.05, "output": 0.20},
     "openai/gpt-oss-120b":                             {"input": 0.15, "output": 0.60},
