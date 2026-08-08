@@ -39,6 +39,14 @@ and the PR-AUC column on slide 7 of the deck):
 Every other metric in the snapshot reproduces to six decimal places and is
 unaffected.
 
+## Deck lineage
+
+`build_deck.py` produces exactly one deck. `satalia-serafeim-papadias.pptx` here
+is a PowerPoint re-save of that output (65 archive entries and 2 speaker-note
+parts, against the generator's 83 and 20 — the re-save dropped most notes). It is
+frozen with the rest of this directory and was NOT regenerated; the corrected
+decks live at the repository root.
+
 **Fixed at the repository root in commit `1619744`** ("metrics: replace
 hand-rolled implementations with scikit-learn / statsmodels"), which delegates to
 `sklearn.metrics.average_precision_score` and adds regression tests covering the

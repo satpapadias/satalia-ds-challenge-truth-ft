@@ -3,7 +3,7 @@ logprob/decision elicitation (the reported baseline, comparable to the fine-tune
 model). Serverless — no dedicated endpoint, ~cents. Platt calibration and the
 decision threshold are fit on validation and reported on the untouched test split.
 
-Expected: accuracy ~0.668, ECE ~0.053 (NOT the score-mode 0.700).
+Expected: accuracy ~0.668, ECE ~0.061 equal-mass (NOT the score-mode 0.700).
 """
 
 from __future__ import annotations

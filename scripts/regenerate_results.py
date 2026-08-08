@@ -30,6 +30,7 @@ import random
 import sys
 
 import numpy as np
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -71,6 +72,12 @@ class LiveSource:
             return None
         return llm._parse_logprobs_payload(v)["top_logprobs"]
 
+    def rationale(self, r):
+        v = self.cache.get(self._key(r, "rationale", "complete", max_tokens=64))
+        if v is None:
+            self.misses += 1
+        return v or ""
+
 
 class ArchiveSource:
     """Schema-1 JSON archive: the exact responses behind the published numbers."""
@@ -103,6 +110,14 @@ class ArchiveSource:
             return None
         j = json.loads(v)
         return j["top_logprobs"] if isinstance(j, dict) and "top_logprobs" in j else j
+
+    def rationale(self, r):
+        v = self.data.get(self._key(G, prompts.build_messages(r, VARIANT, mode="rationale"),
+                                    max_tokens=64, kind="complete", temperature=0.0,
+                                    reasoning_effort=None, extra=EX))
+        if v is None:
+            self.misses += 1
+        return v or ""
 
 
 def score_probs(src, rows):
@@ -149,6 +164,85 @@ def evaluate(vp, vy, tp, ty):
             "metrics": M.metric_bundle(ty, preds, tpc),
             "ece_detail": ece_block(ty, tpc),
             "ece_raw_uncalibrated": ece_block(ty, list(tp))}
+
+
+class _CachedPredictor:
+    """Offline stand-in for the zero-shot predictor, backed by a response source.
+    Used to re-derive the explainer aggregate without any API call."""
+
+    variant = VARIANT
+
+    def __init__(self, src):
+        self.src = src
+
+    def predict(self, rows, labels=None):
+        return SimpleNamespace(probs=score_probs(self.src, rows))
+
+    def rationale(self, rows, max_tokens=64):
+        return [self.src.rationale(r) for r in rows]
+
+
+def explainer_analysis(src, sample, labels, n_boot=10000, seed=0):
+    """Explainer aggregate plus the two statistics the deck and README quote.
+
+    * driver_vs_baseline — accuracy of each occlusion-driver subset against the
+      MAJORITY-CLASS RATE OF THAT SUBSET. Comparing a subset's accuracy to the
+      global base rate would be the wrong baseline; the subsets have different
+      class balance.
+    * rationale_agreement — a permutation test. Agreement is "is the occlusion
+      driver among the fields the rationale cites", over 5 categories, but a
+      rationale cites ~1.6 of them on average, so the chance floor is high and
+      must be measured rather than assumed to be 1/5.
+    """
+    res = explain.explain(_CachedPredictor(src), sample, labels=labels,
+                          with_rationale=True)
+    agg = explain.aggregate(res)
+    per = res["per_point"]
+    rng = np.random.default_rng(seed)
+
+    drivers_by = {}
+    for pp in per:
+        drivers_by.setdefault(pp["driver"], []).append(pp)
+    rows = []
+    for drv, pts in sorted(drivers_by.items(), key=lambda kv: -len(kv[1])):
+        y = np.array([p["label"] for p in pts])
+        ok = np.array([int(p["pred"] == p["label"]) for p in pts])
+        n = len(y)
+        base = float(max(y.mean(), 1 - y.mean()))
+        deltas = []
+        for _ in range(n_boot):
+            i = rng.integers(0, n, n)
+            yb = y[i]
+            deltas.append(ok[i].mean() - max(yb.mean(), 1 - yb.mean()))
+        lo, hi = np.percentile(deltas, [2.5, 97.5])
+        rows.append({"driver": drv, "n": n, "class_rate_true": float(y.mean()),
+                     "majority_class_rate": base, "accuracy": float(ok.mean()),
+                     "delta": float(ok.mean() - base),
+                     "delta_ci": [float(lo), float(hi)],
+                     "above_baseline": bool(lo > 0)})
+
+    keyed = [explain._DRIVER_KEY[pp["driver"]] for pp in per]
+    refs = [set(pp["rationale_refs"]) for pp in per]
+    obs = float(np.mean([d in r for d, r in zip(keyed, refs)]))
+    null = np.array([np.mean([keyed[i] in refs[p[i]] for i in range(len(per))])
+                     for p in (rng.permutation(len(per)) for _ in range(n_boot // 5))])
+    pval = float((np.sum(null >= obs) + 1) / (len(null) + 1))
+    agr = np.array([int(d in r) for d, r in zip(keyed, refs)])
+    ob = [agr[rng.integers(0, len(agr), len(agr))].mean() for _ in range(n_boot)]
+
+    return {"field_flip_table": agg["field_table"].to_dict("records"),
+            "driver_distribution": agg["driver_distribution"],
+            "rationale_occlusion_agreement_rate": agg["rationale_occlusion_agreement_rate"],
+            "driver_vs_baseline": rows,
+            "rationale_agreement": {
+                "observed": obs,
+                "ci": [float(np.percentile(ob, 2.5)), float(np.percentile(ob, 97.5))],
+                "null_mean": float(null.mean()),
+                "null_ci": [float(np.percentile(null, 2.5)), float(np.percentile(null, 97.5))],
+                "p_value": pval, "above_chance": bool(pval < 0.05),
+                "n_categories": len(set(keyed)),
+                "mean_refs_per_point": float(np.mean([len(r) for r in refs]))},
+            "examples": explain.examples_frame(res, k=4).to_dict("records")}
 
 
 def main():
@@ -241,6 +335,23 @@ def main():
               f"reduction {pt:+.4f} [{lo:+.4f}, {hi:+.4f}]  "
               f"{'SIGNIFICANT' if lo > 0 else 'not significant'}")
 
+    # ECE difference between the fine-tuned and matched zero-shot runs. This is
+    # the statistic behind "fine-tuning does not improve calibration"; it is
+    # persisted so no slide or README has to write it in prose.
+    yt_a = np.asarray(ty)
+    pb = np.asarray(res["b"]["probs_calibrated"], dtype=float)
+    pc = np.asarray(res["c"]["probs_calibrated"], dtype=float)
+    rng = np.random.default_rng(0)
+    dd = [M.ece(yt_a[i], pb[i]) - M.ece(yt_a[i], pc[i])
+          for i in (rng.integers(0, len(yt_a), len(yt_a)) for _ in range(N_BOOT))]
+    ece_lo, ece_hi = np.percentile(dd, [2.5, 97.5])
+    ece_diff = {"point": float(M.ece(yt_a, pb) - M.ece(yt_a, pc)),
+                "ci": [float(ece_lo), float(ece_hi)],
+                "significant": bool(ece_lo > 0 or ece_hi < 0)}
+    print(f"\n  ECE(zero-shot) - ECE(fine-tuned): {ece_diff['point']:+.4f} "
+          f"[{ece_lo:+.4f}, {ece_hi:+.4f}]  "
+          f"{'SIGNIFICANT' if ece_diff['significant'] else 'NOT significant'}")
+
     # ---- explainer -------------------------------------------------------
     print("\n" + "=" * W)
     print(f"  EXPLAINER (n=300 test rows, score mode) -- {exp_src.name}")
@@ -257,6 +368,18 @@ def main():
         d = exp_ece[s]
         print(f"      ece [{s:<8}]   {d['ece']:>10.6f}  [{d['ci'][0]:.4f}, {d['ci'][1]:.4f}]  "
               f"{d['bins_occupied']} bins occupied")
+
+    exp_agg = explainer_analysis(exp_src, sample, labels)
+    print(f"\n  driver distribution: {exp_agg['driver_distribution']}")
+    print(f"  rationale-occlusion agreement {exp_agg['rationale_agreement']['observed']:.4f} "
+          f"vs permutation null {exp_agg['rationale_agreement']['null_mean']:.4f} "
+          f"(p={exp_agg['rationale_agreement']['p_value']:.4f}) -> "
+          f"{'above chance' if exp_agg['rationale_agreement']['above_chance'] else 'AT CHANCE'}")
+    print(f"  {'driver':<20}{'n':>5}{'base':>9}{'acc':>9}{'acc-base':>11}{'95% CI':>24}")
+    for d in exp_agg["driver_vs_baseline"]:
+        print(f"  {d['driver']:<20}{d['n']:>5}{d['majority_class_rate']:>9.4f}"
+              f"{d['accuracy']:>9.4f}{d['delta']:>+11.4f}"
+              f"   [{d['delta_ci'][0]:+.4f}, {d['delta_ci'][1]:+.4f}]")
 
     if not args.write:
         print("\ndry run — no files written. Re-run with --write to adopt.")
@@ -292,6 +415,7 @@ def main():
     summ["calibrated_comparison"]["fine_tuned_vs_zero_shot_baseline"] = paired["c_vs_b"]
     summ["calibrated_comparison"]["fine_tuned_vs_score_secondary"] = paired["c_vs_a"]
     summ["calibration_effect_raw_to_calibrated"] = cal_effect
+    summ["ece_difference_zeroshot_vs_finetuned"] = ece_diff
     summ["_provenance"] = payload["_provenance"]
     summ["note"] = (
         "Calibrated results on the held-out speaker-disjoint test split (n=1991). "
@@ -306,8 +430,24 @@ def main():
         "(ECE 0.316 -> 0.061 on the zero-shot baseline, non-overlapping CIs). "
         "Hosted LLMs are mildly non-deterministic, so numbers vary slightly "
         "run-to-run.")
+    summ["explainer"] = {**exp_agg,
+                         "_provenance": f"regenerated offline from {exp_src.name}; "
+                                        "0 API calls"}
     json.dump(summ, open("results/summary.json", "w"), indent=2, default=float)
     print("wrote results/summary.json")
+
+    # Per-row calibrated probabilities + labels, so the deck's reliability figure
+    # is rendered from the SAME record as its table instead of recomputing from
+    # a cache (which put a 0.066 figure next to a 0.061 table).
+    json.dump({"labels": [int(v) for v in ty],
+               "runs": {runs[t][0]: {"probs_calibrated": res[t]["probs_calibrated"],
+                                     "probs_raw": [float(x) for x in runs[t][2]],
+                                     "calibrator": res[t]["calibrator"],
+                                     "threshold": res[t]["threshold"]}
+                        for t in ("b", "c", "a")},
+               "_provenance": payload["_provenance"]},
+              open("results/curves.json", "w"))
+    print("wrote results/curves.json")
 
     ex = json.load(open("explain_results.json"))
     ex["metrics"] = exp_metrics

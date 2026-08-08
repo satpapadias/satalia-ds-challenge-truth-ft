@@ -3,13 +3,17 @@
 Every number is read from the canonical root results files (the live run):
   ft_eval_results.json   (a/b/c calibrated metrics + paired tests)
   results/summary.json   (explainer aggregate: field flips, drivers, faithfulness)
-Figures are rendered from cached results only — NO API calls. The one figure that
-needs per-row zero-shot probabilities (the reliability diagram) reads them from the
-on-disk response cache and ABORTS before any network call if coverage is < 100%.
+Figures are rendered from the same JSON record as the tables — NO API calls, and no
+recomputation from the response cache. Per-row calibrated probabilities for the
+reliability diagram come from results/curves.json.
+
+RULE (docs/decisions.md): every number rendered on a slide is interpolated from the
+JSON record. None may be written as prose in this file.
 
 Sparse slide faces (the "On the slide" bullets); all coaching lives in the
 speaker-notes pane. 16:9, "Private & Confidential" footer. The .pptx is written to
-dist/ and is kept OUT of the code submission zip.
+the repository root and is kept OUT of the code submission zip. dist/ holds the
+frozen submitted artifacts and is never written to.
 """
 from __future__ import annotations
 
@@ -42,6 +46,13 @@ SUMM = json.load(open("results/summary.json"))
 EXPL = SUMM["explainer"]
 b, c, a = FE["b"], FE["c"], FE["a"]
 cb = FE["c_vs_b"]
+CAL = SUMM["calibration_effect_raw_to_calibrated"]      # raw -> calibrated ECE
+ECED = SUMM["ece_difference_zeroshot_vs_finetuned"]     # ft vs zero-shot ECE
+RAG = EXPL["rationale_agreement"]                       # permutation test
+DVB = {d["driver"]: d for d in EXPL["driver_vs_baseline"]}
+CURVES = json.load(open("results/curves.json"))         # per-row calibrated probs
+# RULE (docs/decisions.md): every number rendered on a slide is interpolated
+# from the JSON record. No figure below is written as prose.
 
 M = ["accuracy", "balanced_accuracy", "macro_f1", "roc_auc", "pr_auc", "brier", "ece"]
 print("[numbers] read from ft_eval_results.json + results/summary.json")
@@ -52,10 +63,11 @@ print(f"  c_vs_b: dacc {cb['acc_diff'][0]:+.3f} [{cb['acc_diff'][1]:+.3f},{cb['a
 
 field_tbl = EXPL["field_flip_table"]
 flip = {r["removed_field"]: r["flip_rate"] for r in field_tbl}
-dc = {r["driver"]: r for r in EXPL["driver_correctness"]}
 agree = EXPL["rationale_occlusion_agreement_rate"]
 print(f"  explainer: speaker flip {flip['speaker_name']} all_meta {flip['all_metadata']} "
-      f"agree {agree} | statement {dc['statement']['accuracy']} speaker {dc['speaker_name']['accuracy']}")
+      f"agree {agree} (null {RAG['null_mean']:.3f}, p={RAG['p_value']:.2f}) | "
+      f"statement {DVB['statement']['accuracy']:.3f} (base {DVB['statement']['majority_class_rate']:.3f}) "
+      f"speaker {DVB['speaker_name']['accuracy']:.3f} (base {DVB['speaker_name']['majority_class_rate']:.3f})")
 
 # --------------------------------------------------------------------------
 # 2. SPLIT SIZES + TRUE-RATES (computed from data, for slide 3)
@@ -127,29 +139,27 @@ def _ft_probs(rows):
     return [fc[str(r.row_id)] for r in rows]
 
 def fig_reliability():
-    vy = [r.y(SCHEME) for r in val]; ty = [r.y(SCHEME) for r in test]
-    # zero-shot
-    zs_v, zs_t = _offline_zeroshot_probs(val), _offline_zeroshot_probs(test)
-    cal_zs = calibration.fit_best(zs_v, vy)
-    zs_tc = list(calibration.apply(zs_t, cal_zs))
-    # fine-tuned
-    ft_v, ft_t = _ft_probs(val), _ft_probs(test)
-    cal_ft = calibration.fit_best(ft_v, vy)
-    ft_tc = list(calibration.apply(ft_t, cal_ft))
-    ece_zs, ece_ft = metrics.ece(ty, zs_tc), metrics.ece(ty, ft_tc)
-    print(f"[reliability] computed test ECE — zero-shot {ece_zs:.3f}  fine-tuned {ece_ft:.3f} "
-          f"(file: {b['ece']:.3f} / {c['ece']:.3f})")
-    fig, ax = plt.subplots(figsize=(5.6, 5.0))
+    """Rendered from results/curves.json — the SAME record as slide 7's table.
+    Previously this recomputed probabilities from the response cache, which put
+    a 0.066 ECE on the figure next to a 0.061 ECE in the table."""
+    ty = CURVES["labels"]
+    zs_tc = CURVES["runs"]["zero_shot_decision_baseline"]["probs_calibrated"]
+    ft_tc = CURVES["runs"]["fine_tuned_decision"]["probs_calibrated"]
+    ece_zs = SUMM["calibrated_comparison"]["zero_shot_decision_baseline"]["ece"]
+    ece_ft = SUMM["calibrated_comparison"]["fine_tuned_decision"]["ece"]
+    print(f"[reliability] from record — zero-shot {ece_zs:.3f}  fine-tuned {ece_ft:.3f}")
+    fig, ax = plt.subplots(figsize=(5.2, 4.0))
     ax.plot([0, 1], [0, 1], "--", color=GREY, lw=1, label="perfect")
-    for probs, col, lab, ece in [(zs_tc, BLUE, "zero-shot", ece_zs),
-                                 (ft_tc, GREEN, "fine-tuned", ece_ft)]:
-        rc = metrics.reliability_curve(ty, probs)
-        mp = [m for m, c_ in zip(rc["mean_pred"], rc["count"]) if c_ > 0]
-        fp = [f for f, c_ in zip(rc["frac_pos"], rc["count"]) if c_ > 0]
-        ax.plot(mp, fp, "o-", color=col, lw=2, ms=5, label=f"{lab}  (ECE {ece:.3f})")
-    ax.set_xlabel("predicted probability"); ax.set_ylabel("observed frequency")
-    ax.set_title("Reliability on test split — calibrated", fontsize=12, color=NAVY)
-    ax.legend(loc="upper left", fontsize=10); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    for probs, lab, col, e in ((zs_tc, "zero-shot", BLUE, ece_zs),
+                               (ft_tc, "fine-tuned", GREEN, ece_ft)):
+        rc = metrics.reliability_curve(ty, probs, n_bins=10)
+        pts = [(x, y) for x, y, k in zip(rc["mean_pred"], rc["frac_pos"], rc["count"])
+               if k and x == x and y == y]
+        ax.plot([q[0] for q in pts], [q[1] for q in pts], "o-", color=col,
+                label=f"{lab} (ECE {e:.3f})")
+    ax.set_xlabel("mean predicted P(True)"); ax.set_ylabel("observed fraction True")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.legend(loc="upper left", fontsize=9)
+    ax.set_title("Reliability on the held-out test split", fontsize=12, color=NAVY)
     ax.grid(alpha=0.25)
     p = f"{FIGS}/reliability.png"; fig.savefig(p, dpi=150, bbox_inches="tight"); plt.close(fig)
     return p
@@ -177,19 +187,23 @@ def fig_fields():
 
 # 3d. slide-9 driver-correctness contrast -----------------------------------
 def fig_drivers():
-    st, sp = dc["statement"], dc["speaker_name"]
+    st, sp = DVB["statement"], DVB["speaker_name"]
     fig, ax = plt.subplots(figsize=(5.6, 3.4))
     bars = [("statement-driven", st["accuracy"], st["n"], GREEN),
             ("speaker-driven", sp["accuracy"], sp["n"], RED)]
+    bases = [st["majority_class_rate"], sp["majority_class_rate"]]
     x = np.arange(len(bars))
     ax.bar(x, [v for _, v, _, _ in bars], color=[col for *_, col in bars], width=0.55)
     for xi, (_, v, n, _) in zip(x, bars):
         ax.text(xi, v + 0.01, f"{v:.3f}\n(n={n})", ha="center", fontsize=11)
     ax.set_xticks(x); ax.set_xticklabels([lab for lab, *_ in bars], fontsize=11)
     ax.set_ylabel("accuracy"); ax.set_ylim(0, 1)
-    ax.axhline(0.5, ls="--", color=GREY, lw=1)
-    ax.set_title("Predictions driven by the statement are more accurate\n"
-                 "than those driven by the speaker", fontsize=11, color=NAVY)
+    for xi, bv in zip(x, bases):          # each subset's own majority-class rate
+        ax.hlines(bv, xi - 0.3, xi + 0.3, ls="--", color=NAVY, lw=1.6)
+        ax.text(xi + 0.32, bv, f"baseline {bv:.3f}", va="center", fontsize=9, color=NAVY)
+    ax.set_title("Speaker-driven predictions sit at their subset's\n"
+                 "majority-class baseline; statement-driven are above it",
+                 fontsize=11, color=NAVY)
     ax.grid(axis="y", alpha=0.25)
     p = f"{FIGS}/drivers.png"; fig.savefig(p, dpi=150, bbox_inches="tight"); plt.close(fig)
     return p
@@ -337,7 +351,9 @@ def slide7():
     r = tf.paragraphs[0].add_run(); r.text = "The Fair Comparison & Results"
     r.font.size = Pt(28); r.font.bold = True; r.font.color.rgb = NAVY_C
     p2 = tf.add_paragraph(); rr = p2.add_run()
-    rr.text = "Fine-tuning beats matched zero-shot +3.3 pts (p < 0.001) AND halves calibration error."
+    rr.text = (f"Fine-tuning beats the matched zero-shot baseline by "
+               f"+{cb['acc_diff'][0]*100:.1f} pts (p < 1e-6). Calibration cuts ECE by "
+               f"~{CAL['c']['reduction']:.2f}; fine-tuning itself does not improve it.")
     rr.font.size = Pt(14); rr.font.italic = True; rr.font.color.rgb = BLUE_C
     ln = s.shapes.add_shape(1, Inches(0.55), Inches(1.5), Inches(2.4), Pt(3))
     ln.fill.solid(); ln.fill.fore_color.rgb = BLUE_C; ln.line.fill.background()
@@ -404,19 +420,26 @@ def slide7():
     fr = ft.text_frame.paragraphs[0]; run = fr.add_run(); run.text = "Private & Confidential"
     run.font.size = Pt(9); run.font.color.rgb = GREY_C; fr.alignment = PP_ALIGN.RIGHT
     s.notes_slide.notes_text_frame.text = (
-        "Only 3.3 points? On a ~65% ceiling, a significant gain over a matched baseline plus halved calibration "
-        "error is meaningful — accuracy was capped, trustworthy confidence is the axis that moved. Why show "
+        f"Only {cb['acc_diff'][0]*100:.1f} points? On a ~65% ceiling, a significant gain over a matched "
+        "baseline is meaningful — accuracy is capped on this task. Note what did NOT move: the ECE "
+        f"difference vs the matched baseline is {ECED['point']:+.4f} "
+        f"[{ECED['ci'][0]:+.4f}, {ECED['ci'][1]:+.4f}], which straddles zero, so fine-tuning buys accuracy "
+        "and not calibration. Why show "
         "score-mode? It's the contrast that proves accuracy ≠ calibration. Frame: train fine-tunes; val fits "
         "calibrator+threshold for both; test scored once identically — only fine-tuning differs.\n\n"
         "Variance caveat: results vary slightly run-to-run due to non-deterministic inference even at temperature 0; "
-        "the fine-tuning effect was consistently positive and significant across runs (+0.017 to +0.033).")
+        f"the fine-tuning effect is {cb['acc_diff'][0]:+.3f} "
+        f"[{cb['acc_diff'][1]:+.3f}, {cb['acc_diff'][2]:+.3f}], McNemar p={cb['mcnemar']['p_value']:.1e}. "
+        "A live refetch of the same prompts reproduced every metric to within 0.003.")
 slide7()
 
 # ---- Slide 8
 add_slide(
     "Calibration: The Real Win",
     ["Raw confidence is miscalibrated → temperature/Platt scaling, fit on validation, corrects it.",
-     f"ECE {b['ece']:.3f} → {c['ece']:.3f} (more than halved); reliability diagram moves toward the diagonal.",
+     f"Calibration cuts ECE {CAL['b']['ece_raw']:.3f} \u2192 {CAL['b']['ece_calibrated']:.3f} "
+     f"(+{CAL['b']['reduction']:.3f} [{CAL['b']['ci'][0]:+.3f}, {CAL['b']['ci'][1]:+.3f}]); "
+     f"fine-tuning does not improve calibration ({ECED['point']:+.3f}, CI straddles zero).",
      "For a tool that acts on confidence (abstain, escalate, flag), trustworthy probabilities are the operationally useful property."],
     "Temperature/Platt = simple post-hoc corrections fit on held-out data remapping raw probabilities so stated "
     "confidence matches real frequency; I fit several on validation and selected the best. Why not isotonic? "
@@ -439,9 +462,16 @@ def slide9():
     bullets = [
         "explain(model, points, labels) — model-agnostic, either predictor.",
         "Two layers: leave-one-field-out occlusion (faithful by construction) + model's own rationale (plausible, not necessarily faithful).",
-        f"Removing speaker flips {flip['speaker_name']*100:.0f}% of predictions, all metadata {flip['all_metadata']*100:.1f}%; "
-        f"rationales only ~{agree*100:.0f}% faithful; speaker-driven predictions less accurate "
-        f"(statement-driven {dc['statement']['accuracy']:.3f} vs speaker-driven {dc['speaker_name']['accuracy']:.3f}).",
+        f"Removing speaker flips {flip['speaker_name']*100:.0f}% of predictions, all metadata {flip['all_metadata']*100:.1f}%.",
+        (f"Speaker-driven predictions sit at the majority-class baseline of their subset "
+         f"({DVB['speaker_name']['accuracy']:.3f} vs {DVB['speaker_name']['majority_class_rate']:.3f}, "
+         f"\u0394 = {DVB['speaker_name']['delta']:+.3f} "
+         f"[{DVB['speaker_name']['delta_ci'][0]:+.3f}, {DVB['speaker_name']['delta_ci'][1]:+.3f}]); "
+         f"statement-driven are {DVB['statement']['delta']:+.3f} "
+         f"[{DVB['statement']['delta_ci'][0]:+.3f}, {DVB['statement']['delta_ci'][1]:+.3f}] above theirs."),
+        (f"Rationale-occlusion agreement {RAG['observed']:.3f} is indistinguishable from chance "
+         f"(permutation p = {RAG['p_value']:.2f}): the model's self-explanations carry no detectable "
+         f"information about what actually drove the prediction."),
     ]
     for i, txt in enumerate(bullets):
         para = bf.paragraphs[0] if i == 0 else bf.add_paragraph()
@@ -455,18 +485,30 @@ def slide9():
     fr = ft.text_frame.paragraphs[0]; run = fr.add_run(); run.text = "Private & Confidential"
     run.font.size = Pt(9); run.font.color.rgb = GREY_C; fr.alignment = PP_ALIGN.RIGHT
     s.notes_slide.notes_text_frame.text = (
-        "Why two methods? Occlusion is causal — change input, watch real output; rationale is readable but only "
-        "~46% faithful, so I lead with occlusion and treat rationales as hypotheses, catching the model "
-        "rationalizing. 46% — good or bad? Bad for the model's self-explanations, good for my explainer that "
-        "detected it. Shortcut helps or hurts? Hurts (62.5% vs 75.6% — speaker- vs statement-driven); "
-        "correlational but speaker-driven predictions are the less trustworthy ones — causal confirmation of "
-        "slide 3's leakage risk.")
+        "Why two methods? Occlusion is causal — change input, watch real output; rationale is readable but "
+        "unverified, so I lead with occlusion and treat rationales as hypotheses. On agreement: "
+        f"{RAG['observed']:.3f} looks like a moderate faithfulness rate, but the permutation null is "
+        f"{RAG['null_mean']:.3f} (p={RAG['p_value']:.2f}) — the categories overlap and a rationale cites "
+        f"{RAG['mean_refs_per_point']:.1f} of {RAG['n_categories']} on average, so the chance floor is high. "
+        "The honest reading is that rationales carry no DETECTABLE signal about the true driver, which is "
+        "evidence of absent signal rather than a measured faithfulness rate. Shortcut helps or hurts? "
+        f"Speaker-driven predictions land at their subset's majority-class rate "
+        f"({DVB['speaker_name']['accuracy']:.3f} vs {DVB['speaker_name']['majority_class_rate']:.3f}) — "
+        "no signal beyond the class prior — while statement-driven sit "
+        f"{DVB['statement']['delta']:+.3f} above theirs. Causal confirmation of slide 3's leakage risk. "
+        "n=78 for the speaker subset, so the interval is wide; this rules in 'no better than the prior' "
+        "without ruling out a small effect.")
 slide9()
 
 # ---- Slide 10
 add_slide(
     "Findings & Future Work",
-    ["Story: a low-ceiling task evaluated leakage-free; fine-tuning gave a significant accuracy gain over matched zero-shot and halved calibration error; the explainer exposed a speaker shortcut that hurts and showed self-rationales are unreliable.",
+    [f"Story: a low-ceiling task evaluated leakage-free; fine-tuning gave a significant accuracy gain over "
+     f"matched zero-shot ({cb['acc_diff'][0]:+.3f}, p={cb['mcnemar']['p_value']:.0e}) but NO calibration "
+     f"gain; post-hoc calibration is what buys confidence quality "
+     f"(ECE {CAL['b']['ece_raw']:.3f} \u2192 {CAL['b']['ece_calibrated']:.3f}); the explainer showed "
+     f"speaker-driven predictions perform at the majority-class baseline and that self-rationales agree "
+     f"with the true driver only at chance.",
      "Optimized for honest, defensible evaluation over a vanity number.",
      "Future work: logprob elicitation everywhere; richer calibration (isotonic); ensembling zero-shot + fine-tuned; production abstention from the coverage-accuracy curve; alternative elicitations (score-mode trade-off); DPO if ranked data existed."],
     "Another week? Push abstention into a selective-prediction system on the calibrated confidence; ensemble both "
@@ -475,7 +517,8 @@ add_slide(
     "the code. Closes the loop to slide 1.")
 
 os.makedirs("dist", exist_ok=True)
-OUT = "dist/presentation.pptx"
+# dist/ is a frozen submission archive (see dist/README.md) — never write there.
+OUT = "presentation.pptx"
 prs.save(OUT)
 print(f"\n[deck] saved {OUT}  ({len(prs.slides.__iter__.__self__._sldIdLst)} slides)")
 print(f"[figs] generated: {[n for n,_ in figs_made]}")

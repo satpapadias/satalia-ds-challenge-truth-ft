@@ -29,7 +29,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-viz = ["matplotlib>=3.7"]
+viz = [
+    "matplotlib>=3.7",
+    "python-pptx>=1.0.2",
+]
 dev = ["pytest>=7.0"]
 
 [tool.setuptools]

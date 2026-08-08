@@ -217,33 +217,89 @@
       "subjects": 26
     },
     "rationale_occlusion_agreement_rate": 0.457,
-    "driver_correctness": [
+    "driver_vs_baseline": [
       {
         "driver": "statement",
         "n": 158,
-        "accuracy": 0.741
+        "class_rate_true": 0.47468354430379744,
+        "majority_class_rate": 0.5253164556962026,
+        "accuracy": 0.740506329113924,
+        "delta": 0.21518987341772144,
+        "delta_ci": [
+          0.10759493670886078,
+          0.28481012658227844
+        ],
+        "above_baseline": true
       },
       {
         "driver": "speaker_name",
         "n": 78,
-        "accuracy": 0.564
+        "class_rate_true": 0.5641025641025641,
+        "majority_class_rate": 0.5641025641025641,
+        "accuracy": 0.5641025641025641,
+        "delta": 0.0,
+        "delta_ci": [
+          -0.14102564102564108,
+          0.1282051282051282
+        ],
+        "above_baseline": false
       },
       {
         "driver": "subjects",
         "n": 26,
-        "accuracy": 0.692
+        "class_rate_true": 0.46153846153846156,
+        "majority_class_rate": 0.5384615384615384,
+        "accuracy": 0.6923076923076923,
+        "delta": 0.15384615384615385,
+        "delta_ci": [
+          -0.11538461538461542,
+          0.3076923076923077
+        ],
+        "above_baseline": false
       },
       {
         "driver": "statement_context",
         "n": 20,
-        "accuracy": 0.6
+        "class_rate_true": 0.6,
+        "majority_class_rate": 0.6,
+        "accuracy": 0.6,
+        "delta": 0.0,
+        "delta_ci": [
+          -0.29999999999999993,
+          0.20000000000000007
+        ],
+        "above_baseline": false
       },
       {
         "driver": "speaker_affiliation",
         "n": 18,
-        "accuracy": 0.556
+        "class_rate_true": 0.5555555555555556,
+        "majority_class_rate": 0.5555555555555556,
+        "accuracy": 0.5555555555555556,
+        "delta": 0.0,
+        "delta_ci": [
+          -0.3333333333333333,
+          0.16666666666666674
+        ],
+        "above_baseline": false
       }
     ],
+    "rationale_agreement": {
+      "observed": 0.45666666666666667,
+      "ci": [
+        0.4033333333333333,
+        0.5133333333333333
+      ],
+      "null_mean": 0.4355766666666667,
+      "null_ci": [
+        0.3933333333333333,
+        0.48
+      ],
+      "p_value": 0.18940529735132433,
+      "above_chance": false,
+      "n_categories": 5,
+      "mean_refs_per_point": 1.5866666666666667
+    },
     "examples": [
       {
         "row_id": 6974,
@@ -294,7 +350,7 @@
         "rationale": "The claim is false because the flights were funded by the Senate's off"
       }
     ],
-    "_provenance": "regenerated offline from the schema-2 cache (responses refetched under a known backend); 0 cache misses, 0 API calls"
+    "_provenance": "regenerated offline from live (schema-2 cache, batch backend); 0 API calls"
   },
   "calibration_effect_raw_to_calibrated": {
     "b": {
@@ -330,5 +386,13 @@
     "source_explainer": "live (schema-2 cache, batch backend)",
     "n_boot": 2000,
     "ece_default_binning": "quantile (equal-mass)"
+  },
+  "ece_difference_zeroshot_vs_finetuned": {
+    "point": 0.009702171833942987,
+    "ci": [
+      -0.005680701541527892,
+      0.027035398258122557
+    ],
+    "significant": false
   }
 }

@@ -401,3 +401,128 @@ a crutch that degrades performance, not a reliable signal. (Correlational caveat
 the model may fall back on the speaker precisely when the claim is short/
 uninformative, i.e. on intrinsically harder items; either reading supports "don't
 trust speaker-driven predictions.") This is a headline deck finding.
+
+---
+
+## 2026-08-08 — Post-audit corrections to the record
+
+### Rule: every number on a slide comes from the JSON record
+
+**Decision:** No figure rendered on a slide may be written as prose in
+`build_deck.py`. Every number is interpolated from `ft_eval_results.json`,
+`results/summary.json` or `results/curves.json`.
+
+**Why:** the deck carried four claims that the JSON had already outgrown —
+"+3.3 pts", "halves calibration error", "more than halved", "~46% faithful" —
+because they were typed into slide text and speaker notes rather than read from
+the record. Numbers inside f-strings self-corrected when the results were
+regenerated; numbers in prose did not. Statistics the deck needs are now
+persisted deliberately (`ece_difference_zeroshot_vs_finetuned`,
+`explainer.driver_vs_baseline`, `explainer.rationale_agreement`,
+`results/curves.json`) rather than recomputed or retyped.
+
+Corollary applied at the same time: the slide-8 reliability figure used to
+recompute probabilities from the response cache, printing ECE 0.066 on a figure
+sitting beside a 0.061 table. It now reads `results/curves.json`, the same
+record as the table.
+
+### The 75.6% / 62.5% driver-accuracy figures: STALE, not fabricated
+
+**Correction to an in-flight assumption.** These were flagged as matching no
+recorded value. They do: they are in this file, in the earlier explainer
+analysis, from a **superseded run** whose subsets were n=164 statement-driven /
+n=72 speaker-driven. The current 300-row sample gives n=158 / n=78 and
+0.741 / 0.564. So the deck figures were stale — carried forward from an earlier
+run after the underlying analysis was re-run — not invented.
+
+The distinction matters for the remediation: a fabricated number means someone
+wrote fiction, and the fix is a provenance rule. A stale number means the
+pipeline let a superseded value survive a re-run, and the fix is the rule above
+(read from the record, never retype). It is the second failure, which is the one
+the rule actually prevents.
+
+### Rationale-occlusion agreement is at chance
+
+**Finding:** the explainer's headline faithfulness statistic, 0.457 agreement
+between the occlusion-identified driver and the field the model's rationale
+cites, is **not distinguishable from chance**. Permutation null (driver labels
+shuffled against rationales, 2,000 draws): mean 0.436, 95% range
+[0.393, 0.480], **p = 0.19**. Observed 95% CI [0.400, 0.513].
+
+**Why the chance floor is so high:** agreement is scored over 5 categories, but a
+rationale cites **1.59 of 5** on average, and `statement` is cited in 183/300
+rationales while also being the most common occlusion driver. Assuming a 1/5
+chance floor — as "only 46% faithful" implicitly does — is wrong by a factor of
+more than two.
+
+**What we now claim:** the rationales carry *no detectable information* about
+which field actually drove the prediction. That is evidence of **absent signal**,
+not a measured 46% faithfulness rate. Failing to reject at n=300 is not proof of
+zero relationship, and the claim is stated that way.
+
+### Speaker-driven predictions sit at the majority-class baseline
+
+**Finding, stronger than the previous "the shortcut hurts":** when speaker
+identity is the deciding input, accuracy equals the majority-class rate **of that
+subset** — 0.564 vs 0.564, Δ = +0.000 [−0.141, +0.128] (n=78). Statement-driven
+predictions are +0.215 [+0.108, +0.285] above *their* subset's baseline (n=158).
+
+**Methodological point:** the baseline must be each subset's own class rate, not
+the global one. The subsets have different class balance (0.564 vs 0.525 True),
+so comparing both to a single global figure would manufacture a difference.
+The point estimate landing exactly on the baseline is coincidence; the claim is
+"indistinguishable from the majority-class baseline", and n=78 gives a wide
+interval that rules in "no better than the prior" without ruling out a small
+effect.
+
+### predict_examples were 100% contaminated by the p=0.5 fallback
+
+**Finding:** all eight rows in `results/summary.json:predict_examples` — the
+first table a reviewer sees in `notebooks/00_results_walkthrough.ipynb` — held
+`p_true = 0.5` and predicted `True`. Every one came from the silent
+logprob-fallback path: when `prob_from_logprobs` found no True/False token it
+returned a neutral 0.5, which was recorded as if it were a model output.
+
+**Why it survived:** the fallback was indistinguishable from a real prediction
+once written to JSON, and nothing asserted that a demo table should contain
+varied probabilities. Regenerated from the schema-2 cache under a known backend:
+0/8 at exactly 0.5.
+
+### The Platt calibrator never converged, so it never ran
+
+**Finding:** `fit_platt` was 2,000 fixed steps of gradient descent at lr=0.5 with
+no convergence check. Its validation NLL was 0.859 / 1.157 / **3.500** against
+temperature scaling's 0.706 / 0.691 / 0.643, and on one run it produced a
+**negative** slope (A = −0.0988), i.e. an inverted calibration. So `fit_best`
+selected temperature every time and the entire Platt branch was unreachable in
+practice while appearing fully implemented and tested.
+
+**After the fix** (logistic regression on the logit, regularisation off via
+C=np.inf): Platt wins on all three runs, and the paired bootstrap of the NLL
+difference excludes zero each time — so the parsimony margin rule never fires.
+This single change moved every non-pr_auc number in the adopted record.
+
+**Lesson:** a code path can be dead because it is *never selected*, not only
+because it is never called. Neither coverage nor the test suite would have shown
+this; only comparing the two arms' objective values did.
+
+### PR-AUC was order-dependent, not merely imprecise
+
+**Finding:** the hand-rolled `pr_auc` accumulated precision per **sample** rather
+than per distinct threshold, crediting operating points the classifier cannot
+realise inside a group of tied scores. The result therefore depended on **row
+order**. With all scores tied:
+
+| labels | ours | correct |
+|---|---|---|
+| `[1,0,1,0]` | 0.833 | 0.500 |
+| `[1,1,0,0]` | 1.000 | 0.500 |
+| `[0,0,1,1]` | 0.417 | 0.500 |
+
+The dataset is squarely in that regime: score-mode elicitation emits ~17 distinct
+values across 9.6k rows, and even the logprob path has only 1,134 distinct values
+across 1,991 test rows. So "continuous probabilities" was not protection — the
+zero-shot logprob run still moved +0.0108.
+
+**Fixed** by delegating to `sklearn.metrics.average_precision_score`, with
+regression tests covering the all-tied case and order permutation.
