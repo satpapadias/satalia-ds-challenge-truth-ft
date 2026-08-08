@@ -55,6 +55,15 @@ class LiveSource:
     name = "live (schema-2 cache, batch backend)"
 
     def __init__(self):
+        if not os.path.isdir(llm._DEFAULT_CACHE):
+            raise SystemExit(
+                f"schema-2 response cache not found at {llm._DEFAULT_CACHE}.\n"
+                "It is gitignored, so a fresh clone does not have one. Rebuild it:\n"
+                "    python3 scripts/migrate_cache.py --apply       # from the tracked v1 archive\n"
+                "    python3 scripts/refetch_quarantined.py         # ~$0.33, needs TOGETHER_API_KEY\n"
+                "Or run fully offline from the tracked archive instead:\n"
+                "    python3 scripts/regenerate_results.py --source archive "
+                "--explainer-source archive")
         self.cache = llm.ResponseCache()
         self.misses = 0
 
@@ -244,6 +253,23 @@ def explainer_analysis(src, sample, labels, n_boot=10000, seed=0):
             "examples": explain.examples_frame(res, k=4).to_dict("records")}
 
 
+def _assert_complete(*sources, stage):
+    """Abort if any response source served a miss.
+
+    Called after EVERY stage that reads a source. The previous single check ran
+    before the explainer section had read anything, so a missing schema-2 cache
+    produced 300 silent p=0.5 defaults and printed a fabricated explainer table
+    with exit code 0 — the failure mode this whole audit exists to remove.
+    """
+    total = sum(s.misses for s in sources)
+    if total:
+        raise SystemExit(
+            f"{total} responses missing while computing {stage}.\n"
+            "The record cannot be regenerated from an incomplete cache. Rebuild it "
+            "with scripts/refetch_quarantined.py (~$0.33), or run fully offline "
+            "with --source archive --explainer-source archive.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=["live", "archive"], default="archive",
@@ -276,9 +302,7 @@ def main():
     }
     print(f"source (a/b/c) : {src.name}")
     print(f"source (explain): {exp_src.name}")
-    if src.misses or exp_src.misses:
-        raise SystemExit(f"{src.misses + exp_src.misses} responses missing — "
-                         f"run scripts/refetch_quarantined.py")
+    _assert_complete(src, exp_src, stage="runs (a)/(b)/(c)")
 
     evals = {}
     res = {}
@@ -373,6 +397,7 @@ def main():
         print(f"      ece [{s:<8}]   {d['ece']:>10.6f}  [{d['ci'][0]:.4f}, {d['ci'][1]:.4f}]  "
               f"{d['bins_occupied']} bins occupied")
 
+    _assert_complete(exp_src, stage="the explainer sample")
     exp_agg = explainer_analysis(exp_src, sample, labels)
     print(f"\n  driver distribution: {exp_agg['driver_distribution']}")
     print(f"  rationale-occlusion agreement {exp_agg['rationale_agreement']['observed']:.4f} "
@@ -385,6 +410,7 @@ def main():
               f"{d['accuracy']:>9.4f}{d['delta']:>+11.4f}"
               f"   [{d['delta_ci'][0]:+.4f}, {d['delta_ci'][1]:+.4f}]")
 
+    _assert_complete(src, exp_src, stage="the full record")
     if not args.write:
         print("\ndry run — no files written. Re-run with --write to adopt.")
         return
