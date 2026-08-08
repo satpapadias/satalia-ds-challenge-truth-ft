@@ -61,14 +61,33 @@ def prob_from_logprobs(top_logprobs: dict):
 
 class ZeroShotPredictor(Predictor):
     def __init__(self, model, variant="full", threshold=0.5, client=None, seed=0,
-                 use_logprobs=True, neutral_score=50.0):
+                 use_logprobs=True, neutral_score=50.0, calibrator=None):
+        """`calibrator` is an optional DecisionArtifact (or a path to one).
+
+        When supplied, predict() returns CALIBRATED probabilities and decides at
+        the artifact's tuned threshold. When omitted — the default — predict()
+        returns RAW probabilities decided at `threshold` (0.5), exactly as
+        before: loading an artifact is opt-in, so nothing changes behaviour
+        silently. The artifact is checked against `model` at construction and
+        raises CalibratorModelMismatch on a mismatch."""
         self.model = model
+        self.calibrator = self._load_calibrator(calibrator, model)
         self.variant = variant
         self.threshold = threshold
         self.client = client
         self.use_logprobs = use_logprobs
         self.neutral_score = neutral_score
         self._rng = random.Random(seed)
+
+    @staticmethod
+    def _load_calibrator(calibrator, model):
+        if calibrator is None:
+            return None
+        from ..evaluation import DecisionArtifact
+        art = (DecisionArtifact.load(calibrator) if isinstance(calibrator, str)
+               else calibrator)
+        art.check_model(model)          # hard error, never a warning
+        return art
 
     def _messages(self, rows, mode):
         return [prompts.build_messages(r, self.variant, mode=mode) for r in rows]
@@ -116,8 +135,13 @@ class ZeroShotPredictor(Predictor):
         else:
             scores, probs, preds, parse_failures = self._predict_score(rows)
 
+        threshold_used = self.threshold
+        if self.calibrator is not None:
+            probs, preds = self.calibrator.decide(probs)
+            threshold_used = self.calibrator.threshold
+
         result_metrics = compute_metrics(labels, preds, probs) if labels is not None else None
         return PredictionResult(
-            scores=scores, probs=probs, preds=preds, threshold=self.threshold,
+            scores=scores, probs=probs, preds=preds, threshold=threshold_used,
             parse_failures=parse_failures, n=len(rows), metrics=result_metrics,
         )

@@ -23,7 +23,7 @@ from .zeroshot import ZeroShotPredictor
 
 class FinetunedPredictor(Predictor):
     def __init__(self, base_model, served_model=None, variant="full", scheme="primary",
-                 client=None, threshold=0.5, use_logprobs=True):
+                 client=None, threshold=0.5, use_logprobs=True, calibrator=None):
         self.base_model = base_model
         self.served_model = served_model      # endpoint/model id used at predict time
         self.variant = variant
@@ -31,6 +31,7 @@ class FinetunedPredictor(Predictor):
         self.client = client
         self.threshold = threshold
         self.use_logprobs = use_logprobs
+        self.calibrator = calibrator       # DecisionArtifact or path; see ZeroShotPredictor
         self.job_id = None
         self.output_name = None
 
@@ -87,7 +88,8 @@ class FinetunedPredictor(Predictor):
             raise RuntimeError("no served model: call fine_tune() first or pass served_model=")
         client = self.client or llm.make_client(served)
         return ZeroShotPredictor(model=served, variant=self.variant, client=client,
-                                 threshold=self.threshold, use_logprobs=self.use_logprobs)
+                                 threshold=self.threshold, use_logprobs=self.use_logprobs,
+                                 calibrator=self.calibrator)
 
     def predict(self, points, labels=None):
         return self._delegate().predict(points, labels=labels)

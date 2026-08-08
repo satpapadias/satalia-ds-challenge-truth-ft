@@ -39,6 +39,9 @@ from truthclf.predictors import finetuned  # noqa: E402
 from truthclf.predictors.zeroshot import parse_score, prob_from_logprobs  # noqa: E402
 
 G = "google/gemma-4-31B-it"
+FT_MODEL = "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d"
+ARTIFACT_DIR = "results/calibrators"
+_LAST_EVAL = []
 EX = {"chat_template_kwargs": {"enable_thinking": False}}
 SCHEME, VARIANT = "primary", "full"
 N_BOOT = 2000
@@ -152,6 +155,7 @@ def evaluate(vp, vy, tp, ty):
     """Adopted pipeline (truthclf.evaluation) plus the reporting extras."""
     ev = evaluation.calibrated_evaluation(vp, vy, tp, ty, objective="balanced_accuracy")
     cal = ev.calibrator
+    _LAST_EVAL.append(ev)
     return {"calibrator": ev.method, "selected_by": ev.selected_by,
             "val_nll": cal["val_nll"], "nll_diff_ci": list(cal["nll_diff_ci"]),
             "threshold": ev.threshold, "preds": ev.preds,
@@ -276,7 +280,12 @@ def main():
         raise SystemExit(f"{src.misses + exp_src.misses} responses missing — "
                          f"run scripts/refetch_quarantined.py")
 
-    res = {tag: evaluate(vp, vy, tp, ty) for tag, (_, vp, tp) in runs.items()}
+    evals = {}
+    res = {}
+    for tag, (_, vp, tp) in runs.items():
+        _LAST_EVAL.clear()
+        res[tag] = evaluate(vp, vy, tp, ty)
+        evals[tag] = _LAST_EVAL[-1]
 
     W = 96
     print("\n" + "=" * W)
@@ -434,6 +443,20 @@ def main():
     # Per-row calibrated probabilities + labels, so the deck's reliability figure
     # is rendered from the SAME record as its table instead of recomputing from
     # a cache (which put a 0.066 figure next to a 0.061 table).
+    # --- shippable decision artifacts: calibrator params + tuned threshold.
+    # Without these the calibrator exists only inside this process, and a
+    # container calling predict() would emit RAW probabilities (ECE ~0.32
+    # instead of ~0.06) thresholded at 0.5 instead of the tuned value.
+    model_of = {"a": G, "b": G, "c": FT_MODEL}
+    for tag in ("a", "b", "c"):
+        art = evaluation.build_artifact(
+            evals[tag], model=model_of[tag],
+            fitted_on=f"speaker-disjoint validation split (seed 0, scheme {SCHEME})",
+            n_val=len(vy), val_probs=runs[tag][1], val_labels=vy,
+            objective="balanced_accuracy")
+        path = art.save(f"{ARTIFACT_DIR}/{runs[tag][0]}.json")
+        print(f"wrote {path}  ({art.calibrator['method']}, thr={art.threshold:.4f})")
+
     json.dump({"labels": [int(v) for v in ty],
                "runs": {runs[t][0]: {"probs_calibrated": res[t]["probs_calibrated"],
                                      "probs_raw": [float(x) for x in runs[t][2]],
