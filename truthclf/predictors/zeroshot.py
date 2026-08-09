@@ -22,7 +22,8 @@ import random
 import re
 
 from .. import prompts
-from .base import Predictor, PredictionResult, compute_metrics
+from .base import (Predictor, PredictionResult, compute_metrics,
+                   validate_points)
 
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
@@ -131,6 +132,14 @@ class ZeroShotPredictor(Predictor):
                 "(e.g. truthclf.llm.TogetherClient) to make scored predictions."
             )
         rows = points          # the spec (and FinetunedPredictor) name this `points`
+        validate_points(rows, labels)
+        if not rows:
+            # An empty batch is a legitimate no-op for a service, not an error.
+            # metrics stays None: there is nothing to score, and sklearn raises
+            # on empty arrays, which previously surfaced as an opaque ValueError.
+            return PredictionResult(scores=None, probs=[], preds=[],
+                                    threshold=self.threshold, parse_failures=0,
+                                    n=0, metrics=None)
         if self.use_logprobs:
             scores, probs, preds, parse_failures = self._predict_logprobs(rows)
         else:

@@ -184,7 +184,17 @@ class _CachedPredictor:
         self.src = src
 
     def predict(self, rows, labels=None):
-        return SimpleNamespace(probs=score_probs(self.src, rows))
+        """Mirrors PredictionResult closely enough for explain(), including
+        parse_failures — otherwise explain()'s degradation gate cannot fire on
+        the offline path, which is the path most likely to run on a stale cache."""
+        probs, failures = [], 0
+        for r in rows:
+            s = parse_score(self.src.score(r) or "")
+            if s is None:
+                failures += 1
+                s = 50.0
+            probs.append(s / 100.0)
+        return SimpleNamespace(probs=probs, parse_failures=failures, n=len(rows))
 
     def rationale(self, rows, max_tokens=64):
         return [self.src.rationale(r) for r in rows]
@@ -202,8 +212,19 @@ def explainer_analysis(src, sample, labels, n_boot=10000, seed=0):
       rationale cites ~1.6 of them on average, so the chance floor is high and
       must be measured rather than assumed to be 1/5.
     """
+    # KNOWN, MEASURED EXCEPTION. A handful of occlusion rows carry genuine model
+    # refusals — "There is no statement provided to evaluate" — on rows whose
+    # statement is too short to contain a claim (row_ids 4827, 7978, 8358). Those
+    # are real responses, not cache degradation, but parse_score cannot tell the
+    # two apart, so they count as failures.
+    #   live (schema-2, refetched) : 5 / 1800 = 0.278%
+    #   archive (schema-1)         : 7 / 1800 = 0.389%   <- the binding number
+    # The archive's two extra failures are part of the same drift that made us
+    # adopt the LIVE source for the explainer (see docs/decisions.md, 2026-08-08).
+    # The tolerance is set just above the higher measured rate, so both documented
+    # sources pass and an EIGHTH failure aborts the run.
     res = explain.explain(_CachedPredictor(src), sample, labels=labels,
-                          with_rationale=True)
+                          with_rationale=True, max_parse_failure_rate=0.004)
     agg = explain.aggregate(res)
     per = res["per_point"]
     rng = np.random.default_rng(seed)

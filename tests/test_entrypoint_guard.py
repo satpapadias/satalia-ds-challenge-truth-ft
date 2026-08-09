@@ -30,9 +30,14 @@ def _clone(tmp_path):
                    cwd=ROOT, check=True)
     dst.mkdir()
     subprocess.run(["tar", "-xf", str(tmp_path / "t.tar"), "-C", str(dst)], check=True)
-    # carry the working copy of the entrypoint so the test covers HEAD-in-progress
-    for f in ("scripts/regenerate_results.py",):
-        (dst / f).write_text((pathlib_Path(ROOT) / f).read_text())
+    # Overlay the WORKING COPY of the package and scripts, so the test exercises
+    # the code as it is now rather than as it was at HEAD. Copying only the
+    # entrypoint left it calling an older truthclf/ and failing spuriously.
+    import shutil
+    for d in ("truthclf", "scripts"):
+        shutil.rmtree(dst / d, ignore_errors=True)
+        shutil.copytree(pathlib_Path(ROOT) / d, dst / d,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     assert not (dst / ".llm_cache").exists(), "clone must not carry the schema-2 cache"
     return dst
 

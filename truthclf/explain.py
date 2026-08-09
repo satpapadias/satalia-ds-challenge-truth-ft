@@ -73,8 +73,19 @@ def _rationale_refs(text, row):
     return refs
 
 
+class DegradedPredictions(RuntimeError):
+    """The underlying predictor fell back to a neutral probability too often.
+
+    Occlusion attribution reads DIFFERENCES between probabilities. A p=0.5
+    fallback is not a measurement — it is the absence of one — so a run over a
+    degraded cache still yields a complete, plausible-looking driver
+    distribution with no indication that some of it is noise. explain() checks
+    for this because nothing downstream can.
+    """
+
+
 def explain(model, points, labels=None, with_rationale=True,
-            threshold=0.5, driver_eps=0.05):
+            threshold=0.5, driver_eps=0.05, max_parse_failure_rate=0.0):
     # driver_eps: a field counts as the "driver" only if removing it moves the
     # probability by more than this; otherwise the point is attributed to the
     # statement. Swept over {0.01 ... 0.15} in docs/driver_eps_sensitivity.md:
@@ -94,7 +105,23 @@ def explain(model, points, labels=None, with_rationale=True,
             rows.append(_ablate(p, [f])); tags.append((i, f))
         rows.append(_ablate(p, ALL_META)); tags.append((i, "all_metadata"))
 
-    probs = model.predict(rows).probs
+    prediction = model.predict(rows)
+    probs = prediction.probs
+
+    # parse_failures counts p=0.5 neutral fallbacks. Predictors expose it;
+    # lightweight test doubles may not, in which case it cannot be checked.
+    parse_failures = getattr(prediction, "parse_failures", None)
+    parse_failure_rate = None
+    if parse_failures is not None and rows:
+        parse_failure_rate = parse_failures / len(rows)
+        if parse_failure_rate > max_parse_failure_rate:
+            raise DegradedPredictions(
+                f"{parse_failures}/{len(rows)} occlusion predictions "
+                f"({parse_failure_rate:.4%}) fell back to a neutral p=0.5, above "
+                f"the permitted {max_parse_failure_rate:.4%}. Driver attribution "
+                "reads differences between probabilities, so these points "
+                "contribute noise, not signal. Raise max_parse_failure_rate "
+                "deliberately if the failures are known and acceptable.")
     byp = collections.defaultdict(dict)
     for (i, tag), pr in zip(tags, probs):
         byp[i][tag] = pr
@@ -125,7 +152,10 @@ def explain(model, points, labels=None, with_rationale=True,
                     "rationale_refs": sorted(refs) if refs is not None else None,
                     "agree": agree})
 
-    out = {"per_point": per}
+    out = {"per_point": per,
+           "parse_failures": parse_failures,
+           "parse_failure_rate": parse_failure_rate,
+           "n_predictions": len(rows)}
     if labels is not None:
         out["metrics"] = metrics.metric_bundle(labels, base_preds, base_probs)
     return out
@@ -147,6 +177,8 @@ def aggregate(result):
     drivers = collections.Counter(pp["driver"] for pp in per)
     agrees = [pp["agree"] for pp in per if pp["agree"] is not None]
     return {"field_table": pd.DataFrame(rows),
+            "parse_failures": result.get("parse_failures"),
+            "parse_failure_rate": result.get("parse_failure_rate"),
             "driver_distribution": dict(drivers),
             "rationale_occlusion_agreement_rate": (round(sum(agrees) / len(agrees), 3)
                                                    if agrees else None),
