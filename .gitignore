@@ -1,9 +1,10 @@
 # --- Local-only / excluded from submission ---
 notebooks/
 .ipynb_checkpoints/
-CLAUDE.md
+# .claude/ is machine-local session state
 .claude/
 contradictions.txt
+# CLAUDE.md is TRACKED: it is the standing brief and must survive a clone.
 
 # --- LLM response cache ---
 # .llm_cache/ is the schema-2 diskcache (SQLite, ~15 MB, machine-local).
