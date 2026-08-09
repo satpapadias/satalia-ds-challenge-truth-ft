@@ -75,6 +75,15 @@ def _rationale_refs(text, row):
 
 def explain(model, points, labels=None, with_rationale=True,
             threshold=0.5, driver_eps=0.05):
+    # driver_eps: a field counts as the "driver" only if removing it moves the
+    # probability by more than this; otherwise the point is attributed to the
+    # statement. Swept over {0.01 ... 0.15} in docs/driver_eps_sensitivity.md:
+    # both conclusions (speaker-driven is indistinguishable from its subset's
+    # majority-class baseline; statement-driven is strictly above its own) hold
+    # at EVERY value, so neither depends on the constant. 0.05 sits mid-plateau.
+    # Note the resolution is illusory: score-mode emits ~17 distinct
+    # probabilities, so occlusion deltas cluster near multiples of 0.05 and
+    # 0.01/0.02/0.03 give identical results, as do 0.05/0.08.
     """Explain a SET of points with occlusion + rationale + cross-check.
     Returns {"per_point": [...], "metrics": {...} if labels}. Batches all
     occlusion variants into a single predict() call (cache/batch friendly)."""
