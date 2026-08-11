@@ -16,11 +16,12 @@ Run:  python -m truthclf_mcp.model_tools [--host H] [--port P]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import math
 import os
 import warnings
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from mcp.server.mcpserver import MCPServer
@@ -193,27 +194,49 @@ def _finetuned_stored(rows):
             "test splits). Scoring other rows requires a live endpoint.") from e
 
 
-def _finetuned_live(rows, elicitation: str):
-    """Attempt a live fine-tuned call.
+def _build_predictor(model: str, elicitation: str, calibrator=None):
+    """Construct the predictor for a live call.
 
-    The provider rejects this adapter with HTTP 400 `model_not_available`; the
-    request is still issued rather than pre-empted, so the failure reported is
-    the provider's current answer and not a stale assumption baked into this
-    file.
+    The fine-tuned choice yields a FinetunedPredictor rather than a zero-shot
+    predictor aimed at the fine-tuned model id. The two currently behave the
+    same, since FinetunedPredictor delegates to a zero-shot predictor bound to
+    its served model, but the serving configuration for the fine-tuned model
+    belongs on the type that owns it: when it is served from somewhere with a
+    live endpoint, that is where the change lands.
     """
     _require_key()
-    predictor = FinetunedPredictor(
-        base_model=ZERO_SHOT_MODEL, served_model=FINE_TUNED_MODEL,
-        variant="full", use_logprobs=(elicitation == "logprob"))
+    served = ZERO_SHOT_MODEL if model == "zero_shot" else FINE_TUNED_MODEL
+    client = llm.make_client(served)
+    use_logprobs = elicitation == "logprob"
+    if model == "fine_tuned":
+        return FinetunedPredictor(
+            base_model=ZERO_SHOT_MODEL, served_model=served, variant="full",
+            client=client, use_logprobs=use_logprobs, calibrator=calibrator)
+    return ZeroShotPredictor(
+        model=served, variant="full", client=client,
+        use_logprobs=use_logprobs, calibrator=calibrator)
+
+
+@contextlib.contextmanager
+def _live_call(model: str):
+    """Translate a provider refusal to serve the fine-tuned model.
+
+    Wraps every live call so the same underlying failure reports identically
+    whichever tool the caller used. The request is issued rather than
+    pre-empted, so what is reported is the provider's current answer and not an
+    assumption recorded in this file.
+    """
     try:
-        return predictor.predict(rows)
+        yield
     except Exception as e:
-        if "model_not_available" in str(e) or "non-serverless" in str(e):
+        text = str(e)
+        if model == "fine_tuned" and (
+                "model_not_available" in text or "non-serverless" in text):
             raise FineTunedModelNotServable(
                 f"the provider refused to serve {FINE_TUNED_MODEL}: {e}. This is "
                 "a capability response, not a transient failure, and is not "
                 "retried. Use fine_tuned_source='cached' to replay the recorded "
-                "evaluation, or provision a dedicated endpoint.") from e
+                "evaluation, or serve the model from a live endpoint.") from e
         raise
 
 
@@ -228,29 +251,28 @@ def _finetuned_live(rows, elicitation: str):
 )
 @tool_errors
 def predict(
-    model: Literal["zero_shot", "fine_tuned"] = Field(
+    model: Annotated[Literal["zero_shot", "fine_tuned"], Field(
         description="Which predictor to use. Required: there is no default, so "
-                    "a caller cannot receive zero-shot results by omission."),
-    points: list[Point] = Field(
-        description=f"Statements to score. Ceiling {MAX_PREDICT_POINTS} per call."),
+                    "a caller cannot receive zero-shot results by omission.")],
+    points: Annotated[list[Point], Field(
+        description=f"Statements to score. Ceiling {MAX_PREDICT_POINTS} per call.")],
     labels: list[LabelValue] | None = None,
     scheme: Scheme = "primary",
-    elicitation: Literal["logprob", "score"] = Field(
-        default="logprob",
+    elicitation: Annotated[Literal["logprob", "score"], Field(
         description="logprob is the reported baseline; score is the continuous "
-                    "variant used by the explainer."),
+                    "variant used by the explainer.")] = "logprob",
     calibrated: bool = True,
-    fine_tuned_source: Literal["cached", "live"] = Field(
-        default="cached",
+    fine_tuned_source: Annotated[Literal["cached", "live"], Field(
         description="Ignored when model='zero_shot'. 'cached' replays the "
-                    "probabilities recorded during the endpoint evaluation."),
-    estimate_only: bool = Field(
-        default=False,
-        description="Return the token and cost estimate without calling the model."),
-    max_live_calls: int = Field(
-        default=MAX_PREDICT_POINTS, ge=0,
+                    "probabilities recorded during the endpoint evaluation.")] = "cached",
+    estimate_only: Annotated[bool, Field(
+        description="Return the token and cost estimate without calling the "
+                    "model.")] = False,
+    max_live_calls: Annotated[int, Field(
+        ge=0,
         description="Budget ceiling on uncached provider calls. Refuses rather "
-                    "than exceeding. This is a spend limit, not an approval."),
+                    "than exceeding. This is a spend limit, not an approval."
+    )] = MAX_PREDICT_POINTS,
 ) -> dict:
     """Score a set of statements and, given labels, evaluate the predictions."""
     check_batch(len(points), MAX_PREDICT_POINTS, "points", "predict")
@@ -303,13 +325,10 @@ def predict(
                 f"{len(rows)} points would exceed max_live_calls={max_live_calls}. "
                 "No call was made. Raise the ceiling or reduce the batch; "
                 f"estimated cost of the full batch: {estimate}")
-        if model == "fine_tuned":
-            result = _finetuned_live(rows, elicitation)
-        else:
-            client = llm.make_client(served_model)
-            predictor = ZeroShotPredictor(
-                model=served_model, variant="full", client=client,
-                use_logprobs=(elicitation == "logprob"))
+        # Calibration is applied below from the registry artifact, uniformly for
+        # the live and stored paths, so the predictor is built without one.
+        predictor = _build_predictor(model, elicitation)
+        with _live_call(model):
             result = predictor.predict(rows)
         raw = [float(p) for p in result.probs]
         parse_failures = result.parse_failures
@@ -379,24 +398,30 @@ _AGREEMENT_NOTE = (
 )
 @tool_errors
 def explain(
-    model: Literal["zero_shot", "fine_tuned"],
-    points: list[Point] = Field(
+    points: Annotated[list[Point], Field(
         description=f"Statements to explain. Ceiling {MAX_EXPLAIN_POINTS} per "
                     "call, because each point costs six occlusion calls plus "
-                    "one rationale call."),
+                    "one rationale call.")],
+    model: Annotated[Literal["zero_shot", "fine_tuned"], Field(
+        description="Which predictor to explain. Defaults to zero_shot because "
+                    "it is the only one currently explainable: the fine-tuned "
+                    "model has no live endpoint, and its stored probabilities "
+                    "cannot answer occlusion queries. This reflects serving "
+                    "availability, not a judgement about which predictor is "
+                    "more worth explaining. fine_tuned remains requestable and "
+                    "fails with the specific reason.")] = "zero_shot",
     labels: list[LabelValue] | None = None,
     scheme: Scheme = "primary",
     with_rationale: bool = True,
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0),
-    driver_eps: float = Field(
-        default=0.05, ge=0.0, le=1.0,
+    threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
+    driver_eps: Annotated[float, Field(
+        ge=0.0, le=1.0,
         description="A field counts as the driver only if removing it moves the "
-                    "probability by more than this."),
-    max_parse_failure_rate: float = Field(default=0.0, ge=0.0, le=1.0),
-    elicitation: Literal["score", "logprob"] = Field(
-        default="score",
+                    "probability by more than this.")] = 0.05,
+    max_parse_failure_rate: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+    elicitation: Annotated[Literal["score", "logprob"], Field(
         description="Occlusion needs graded probabilities; the logprob path is "
-                    "near-saturated and its deltas collapse to 0/1 jumps."),
+                    "near-saturated and its deltas collapse to 0/1 jumps.")] = "score",
     calibrated: bool = False,
     fine_tuned_source: Literal["cached", "live"] = "cached",
 ) -> dict:
@@ -432,7 +457,6 @@ def explain(
             "rather than a measurement. Explain the zero-shot predictor, or "
             "provision an endpoint and pass fine_tuned_source='live'.")
 
-    _require_key()
     artifact = CALIBRATORS.get(served_model, elicitation) if calibrated else None
     if artifact is not None:
         warns.append(
@@ -441,14 +465,12 @@ def explain(
             f"threshold ({artifact.threshold:.4f}), so predictions here are not "
             "the ones the calibrated predictor would make.")
 
-    client = llm.make_client(served_model)
-    predictor = ZeroShotPredictor(
-        model=served_model, variant="full", client=client,
-        use_logprobs=(elicitation == "logprob"), calibrator=artifact)
-
-    result = X.explain(predictor, rows, labels=y, with_rationale=with_rationale,
-                       threshold=threshold, driver_eps=driver_eps,
-                       max_parse_failure_rate=max_parse_failure_rate)
+    predictor = _build_predictor(model, elicitation, calibrator=artifact)
+    with _live_call(model):
+        result = X.explain(predictor, rows, labels=y,
+                           with_rationale=with_rationale, threshold=threshold,
+                           driver_eps=driver_eps,
+                           max_parse_failure_rate=max_parse_failure_rate)
     agg = X.aggregate(result)
     # aggregate() returns the field table as a DataFrame; convert at the
     # boundary rather than shipping a non-serialisable object.

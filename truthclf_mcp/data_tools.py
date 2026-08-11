@@ -13,7 +13,7 @@ import argparse
 import math
 import os
 import warnings
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from mcp.server.mcpserver import MCPServer
@@ -187,9 +187,9 @@ def dataset(
     split: Literal["train", "val", "test", "clean_all", "raw_all"] = "test",
     scheme: Scheme = "primary",
     select: Literal["page", "sample", "by_row_id"] = "page",
-    limit: int = Field(default=100, ge=1,
-                       description=f"Rows to return. Ceiling {MAX_DATASET_ROWS}."),
-    offset: int = Field(default=0, ge=0),
+    limit: Annotated[int, Field(
+        ge=1, description=f"Rows to return. Ceiling {MAX_DATASET_ROWS}.")] = 100,
+    offset: Annotated[int, Field(ge=0)] = 0,
     seed: int = 0,
     row_ids: list[int] | None = None,
     include_labels: bool = True,
@@ -267,17 +267,15 @@ def metrics(
     preds: list[Literal[0, 1]],
     probs: list[float] | None = None,
     scheme: Scheme = "primary",
-    bootstrap: bool = Field(
-        default=True,
+    bootstrap: Annotated[bool, Field(
         description="Default ON. A metric with no interval, null model or "
-                    "baseline is not a reportable quantity."),
-    n_boot: int = Field(default=1000, ge=100, le=10000),
+                    "baseline is not a reportable quantity.")] = True,
+    n_boot: Annotated[int, Field(ge=100, le=10000)] = 1000,
     seed: int = 0,
-    alpha: float = Field(default=0.05, gt=0.0, lt=0.5),
-    compare_to_preds: list[Literal[0, 1]] | None = Field(
-        default=None,
+    alpha: Annotated[float, Field(gt=0.0, lt=0.5)] = 0.05,
+    compare_to_preds: Annotated[list[Literal[0, 1]] | None, Field(
         description="A second predictor's predictions on the SAME points, for a "
-                    "paired comparison (bootstrap on the difference + McNemar)."),
+                    "paired comparison (bootstrap on the difference + McNemar).")] = None,
     compare_to_name: str = "other",
     baseline: Literal["majority_class", "none"] = "majority_class",
 ) -> dict:
@@ -388,12 +386,12 @@ def metrics(
 @tool_errors
 def retrieval(
     queries: list[str],
-    k: int = Field(default=5, ge=1, le=50),
+    k: Annotated[int, Field(ge=1, le=50)] = 5,
     scheme: Scheme = "primary",
-    min_score: float | None = Field(
-        default=None, ge=0.0, le=1.0,
+    min_score: Annotated[float | None, Field(
+        ge=0.0, le=1.0,
         description="Drop neighbours below this cosine similarity. null returns "
-                    "k regardless, with the scores visible."),
+                    "k regardless, with the scores visible.")] = None,
     include_metadata: bool = False,
 ) -> dict:
     """k-NN over the TRAIN split only. Never returns a val or test row."""

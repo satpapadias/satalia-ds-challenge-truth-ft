@@ -193,6 +193,34 @@ refusal onto `FineTunedModelNotServable`.
 **There is no fallback edge in either direction.** A cached miss errors; a live
 failure errors. The only way to get zero-shot numbers is to ask for them.
 
+### Live calls go through one builder and one translation site
+
+`_build_predictor(model, elicitation, calibrator=None)` constructs the predictor
+for both tools, and `_live_call(model)` is the single context manager that
+translates a provider refusal to serve the fine-tuned model into
+`FineTunedModelNotServable`.
+
+Two reasons this is not merely tidier:
+
+- **The same failure must report the same way.** `predict` scores a batch and
+  `explain` drives occlusion through the explainer, so they reach the model by
+  different routes. With the translation attached to one route, a caller sees
+  two different errors for one cause depending on which tool they happened to
+  use.
+- **The fine-tuned choice yields a `FinetunedPredictor`**, not a zero-shot
+  predictor aimed at the fine-tuned model id. The two behave identically today,
+  since `FinetunedPredictor` delegates to a zero-shot predictor bound to its
+  served model — but the serving configuration belongs on the type that owns it.
+  When the model is served from somewhere with a live endpoint, that path
+  becomes one that should succeed, and it should be built correctly before then
+  rather than corrected under a working endpoint.
+
+The translation keys on the fine-tuned model *and* the provider's message text,
+so an unrelated failure (a reset connection, a zero-shot error carrying similar
+words) is not relabelled as unservable. Pinned by
+`tests/test_mcp_model_tools.py`, which asserts both tools name the same error
+class and that neither of those two cases is mislabelled.
+
 ### APIs called
 
 ```python
@@ -288,6 +316,26 @@ X.aggregate(result) -> dict          # "field_table" is a pandas DataFrame
 
 `aggregate()["field_table"]` is a DataFrame and is not JSON-serialisable; it is
 converted with `.to_dict(orient="records")` at the boundary.
+
+### `model` defaults to `zero_shot`; `predict`'s stays required
+
+The two tools differ deliberately.
+
+`predict` has two working paths — live zero-shot and the stored fine-tuned
+replay — so omitting the choice must not silently pick one. `model` stays
+required there.
+
+`explain` has one. The fine-tuned model has no live endpoint, and its stored
+probabilities cannot answer occlusion queries, so `zero_shot` is the only
+predictor currently explainable and is the default.
+
+**That default records what can be served today, not a view about which
+predictor is more worth explaining.** Both are equally interesting to explain;
+one of them cannot be. `fine_tuned` stays requestable and fails with the
+specific reason — `CounterfactualNotAvailable` for the stored path,
+`FineTunedModelNotServable` for the live one — rather than being hidden behind a
+missing option. When the model is served from a live endpoint, the default
+should be revisited on the merits rather than left in place by inertia.
 
 ### Defaults match the recorded explainer run
 
@@ -518,3 +566,17 @@ framework's own rejection of `predict` without a `model`.
   **model-tools** built and verified end to end over streamable HTTP; the
   recorded fine-tuned test-split evaluation reproduced exactly through the
   MCP path.
+- **Live calls unified** behind one builder and one translation site, so
+  `predict` and `explain` report a provider refusal identically, and the
+  fine-tuned path is built on `FinetunedPredictor`. `explain`'s `model` now
+  defaults to `zero_shot` for the serving reason above. Verified against the
+  live provider: both tools return `FineTunedModelNotServable` for the same
+  refusal.
+- **Tool parameters converted to `Annotated[T, Field(...)]`** with real Python
+  defaults. Previously `Field(default=...)` left `FieldInfo` objects as the
+  defaults, so the handlers were only callable through the MCP framework, which
+  resolves them — calling one directly passed a `FieldInfo` where a value was
+  expected. Served behaviour was unaffected and the published schemas are
+  unchanged (constraints, defaults and required lists all verified identical),
+  but the functions are now directly callable and therefore directly testable.
+  Found by the first test that called a handler without naming every argument.
