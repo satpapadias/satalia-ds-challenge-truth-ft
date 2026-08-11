@@ -495,9 +495,15 @@ def main():
     # container calling predict() would emit RAW probabilities (ECE ~0.32
     # instead of ~0.06) thresholded at 0.5 instead of the tuned value.
     model_of = {"a": G, "b": G, "c": FT_MODEL}
+    # (a) and (b) share a model id and differ ONLY by elicitation: (a) is
+    # score-mode (score_probs), (b) is the decision/logprob baseline. Schema 2
+    # recorded just the model, so the two artifacts were mutually
+    # interchangeable to check_model despite mapping different probability
+    # scales. Schema 3 records this field and check_model verifies it.
+    elicitation_of = {"a": "score", "b": "logprob", "c": "logprob"}
     for tag in ("a", "b", "c"):
         art = evaluation.build_artifact(
-            evals[tag], model=model_of[tag],
+            evals[tag], model=model_of[tag], elicitation=elicitation_of[tag],
             fitted_on=f"speaker-disjoint validation split (seed 0, scheme {SCHEME})",
             n_val=len(vy), val_probs=runs[tag][1], val_labels=vy,
             objective="balanced_accuracy")

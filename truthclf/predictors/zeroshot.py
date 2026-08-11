@@ -69,10 +69,13 @@ class ZeroShotPredictor(Predictor):
         the artifact's tuned threshold. When omitted — the default — predict()
         returns RAW probabilities decided at `threshold` (0.5), exactly as
         before: loading an artifact is opt-in, so nothing changes behaviour
-        silently. The artifact is checked against `model` at construction and
-        raises CalibratorModelMismatch on a mismatch."""
+        silently. The artifact is checked against `model` AND against this
+        predictor's elicitation mode at construction, raising
+        CalibratorModelMismatch on either — the two zero-shot artifacts share a
+        model id and differ only by elicitation, so the model check alone never
+        separated them."""
         self.model = model
-        self.calibrator = self._load_calibrator(calibrator, model)
+        self.calibrator = self._load_calibrator(calibrator, model, use_logprobs)
         self.variant = variant
         self.threshold = threshold
         self.client = client
@@ -81,13 +84,20 @@ class ZeroShotPredictor(Predictor):
         self._rng = random.Random(seed)
 
     @staticmethod
-    def _load_calibrator(calibrator, model):
+    def elicitation_name(use_logprobs: bool) -> str:
+        """The artifact-facing name of this predictor's probability scale."""
+        return "logprob" if use_logprobs else "score"
+
+    @classmethod
+    def _load_calibrator(cls, calibrator, model, use_logprobs):
         if calibrator is None:
             return None
         from ..evaluation import DecisionArtifact
         art = (DecisionArtifact.load(calibrator) if isinstance(calibrator, str)
                else calibrator)
-        art.check_model(model)          # hard error, never a warning
+        # hard error, never a warning — and both halves of the identity, since
+        # the model half alone cannot tell the two zero-shot artifacts apart
+        art.check_model(model, cls.elicitation_name(use_logprobs))
         return art
 
     def _messages(self, rows, mode):

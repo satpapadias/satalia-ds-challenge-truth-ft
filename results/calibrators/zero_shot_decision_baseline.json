@@ -10,6 +10,7 @@
     "platt": 0.6630966931659963,
     "temperature": 0.6906227043436922
   },
+  "elicitation": "logprob",
   "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
   "model": "google/gemma-4-31B-it",
   "n_val": 1917,
@@ -19,7 +20,7 @@
     0.03933475560399915
   ],
   "objective": "balanced_accuracy",
-  "schema": 2,
+  "schema": 3,
   "selected_by": "margin",
   "threshold": 0.5438485478791514
 }

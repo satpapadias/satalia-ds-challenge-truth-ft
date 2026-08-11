@@ -76,16 +76,30 @@ def calibrated_evaluation(val_probs, val_labels, test_probs, test_labels,
 # ---------------------------------------------------------------------------
 # Decision artifact: the fitted calibrator + tuned threshold, as a shippable file
 # ---------------------------------------------------------------------------
-ARTIFACT_SCHEMA = 2
+ARTIFACT_SCHEMA = 3
+
+# How the probability being calibrated was elicited from the model. This is part
+# of the artifact's identity, not metadata: the same model id produces two
+# DIFFERENT probability scales depending on the mode, so (model, elicitation) is
+# the smallest key that identifies a scale. See CalibratorModelMismatch.
+ELICITATIONS = ("logprob", "score")
 
 
 class CalibratorModelMismatch(ValueError):
-    """Raised when an artifact is applied to a model it was not fitted for.
+    """Raised when an artifact is applied to a model+elicitation it was not fitted for.
 
     A calibrator maps one model's probability scale onto calibrated
     probabilities. Applying model A's mapping to model B's output is silently
     wrong — the numbers still look like probabilities — so this is a hard error,
     never a warning.
+
+    THE ELICITATION MODE IS PART OF THAT IDENTITY, and schema 2 did not record
+    it. Both zero-shot artifacts here carry model "google/gemma-4-31B-it": the
+    logprob baseline (A=0.0478, B=0.0922, thr=0.5438) and the score-mode
+    secondary (A=0.0412, B=0.1901, thr=0.5515). A check keyed on the model alone
+    accepted either artifact on either predictor — different probability scales,
+    different tuned thresholds, no error, and output that still looks like
+    probabilities. Schema 3 records `elicitation` and check_model verifies both.
     """
 
 
@@ -100,6 +114,7 @@ class DecisionArtifact:
     """
 
     model: str                      # the model id this calibrator was fitted for
+    elicitation: str                # "logprob" | "score" — the scale it was fitted on
     calibrator: dict                # fit_best output: method + T or (A, B)
     threshold: float
     objective: str
@@ -113,6 +128,16 @@ class DecisionArtifact:
     # No timestamp is stored. A wall-clock field makes every no-op regeneration
     # produce a different file, so `git diff` stops distinguishing "the numbers
     # changed" from "the script ran again". The write time is logged instead.
+
+    def __post_init__(self):
+        # Validated at construction, not at check time: a typo'd elicitation
+        # would otherwise sit in a written artifact and only surface as a
+        # mismatch against a correctly-spelled predictor, which reads as the
+        # wrong bug entirely.
+        if self.elicitation not in ELICITATIONS:
+            raise ValueError(
+                f"elicitation must be one of {ELICITATIONS}, got "
+                f"{self.elicitation!r}")
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -143,16 +168,32 @@ class DecisionArtifact:
             raise ValueError(
                 f"{path}: artifact schema {d.get('schema')} != expected "
                 f"{ARTIFACT_SCHEMA}; refit rather than reinterpreting it "
-                "(schema 2 dropped the created_at field)")
+                "(schema 2 dropped the created_at field; schema 3 added "
+                "`elicitation`, which schema-2 files cannot supply — a default "
+                "would guess at which probability scale the file was fitted on)")
         return cls(**d)
 
-    def check_model(self, model: str) -> None:
-        """Hard-fail if this artifact was fitted for a different model."""
+    def check_model(self, model: str, elicitation: str) -> None:
+        """Hard-fail if this artifact was fitted for a different model OR a
+        different elicitation mode.
+
+        `elicitation` is REQUIRED and has no default. A default would restore
+        exactly the hole this check was widened to close: the caller that does
+        not think about elicitation is the caller that silently applies the
+        score-mode calibrator to logprob-mode probabilities.
+        """
         if model != self.model:
             raise CalibratorModelMismatch(
                 f"calibrator was fitted for {self.model!r} but is being applied to "
                 f"{model!r}. A calibrator is specific to the probability scale of "
                 f"the model that produced it; refit for this model instead.")
+        if elicitation != self.elicitation:
+            raise CalibratorModelMismatch(
+                f"calibrator was fitted on {self.elicitation!r} probabilities for "
+                f"{self.model!r} but is being applied to {elicitation!r} ones. The "
+                "same model emits a different probability scale in each mode "
+                f"(here: threshold {self.threshold:.4f} was tuned on "
+                f"{self.elicitation!r}); refit for this elicitation instead.")
 
     def apply(self, probs):
         """Raw probabilities -> calibrated probabilities."""
@@ -164,10 +205,15 @@ class DecisionArtifact:
         return cal, T.predict_at(cal, self.threshold).tolist()
 
 
-def build_artifact(evaluation: CalibratedEvaluation, model: str, fitted_on: str,
-                   n_val: int, val_probs=None, val_labels=None,
+def build_artifact(evaluation: CalibratedEvaluation, model: str, elicitation: str,
+                   fitted_on: str, n_val: int, val_probs=None, val_labels=None,
                    objective="balanced_accuracy") -> DecisionArtifact:
-    """Package a CalibratedEvaluation into a shippable DecisionArtifact."""
+    """Package a CalibratedEvaluation into a shippable DecisionArtifact.
+
+    `elicitation` is positional and required for the same reason check_model's
+    is: (model, elicitation) is the identity of a probability scale, and this
+    function is the only place an artifact acquires it.
+    """
     cal = evaluation.calibrator
     cands = {}
     if val_probs is not None and val_labels is not None:
@@ -178,6 +224,7 @@ def build_artifact(evaluation: CalibratedEvaluation, model: str, fitted_on: str,
             cands[name] = calibration._nll(calibration.apply(val_probs, params), y)
     return DecisionArtifact(
         model=model,
+        elicitation=elicitation,
         calibrator={k: v for k, v in cal.items() if k != "nll_diff_ci"},
         threshold=float(evaluation.threshold),
         objective=objective,
