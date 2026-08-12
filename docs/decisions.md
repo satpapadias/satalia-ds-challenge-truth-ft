@@ -657,3 +657,50 @@ metadata is irrelevant to it.
 entrypoint refreshed `metrics` and left `aggregate` from whatever was on disk, so
 it had drifted until it disagreed with the same figures in `results/summary.json`.
 It is now rewritten in full.
+
+---
+
+## 2026-08-13 — Pattern: a default category absorbs the unmeasured, then inflates itself
+
+Naming this because it has now produced two wrong published claims in the same
+file, from the same value, in two different roles.
+
+**The shape.** A categorical output has a fallback value for "none of the
+specific cases applied". Points where the measurement produced *nothing* land in
+that fallback alongside points where the measurement genuinely selected it. The
+category therefore contains two populations that mean different things, and any
+statistic computed over it is a weighted average of a real effect and an
+artifact — with the artifact's share unknown and unreported.
+
+**Instance 1 — the driver category.** `driver` falls back to `statement` when no
+occluded field exceeds `driver_eps`. That rule cannot distinguish "some field
+moved it, none by enough" from "nothing moved it at all". 137 of 300 sampled
+points were the second kind, so `statement` was 158 points of which 87% were
+unmeasured. The published claim "statement-driven predictions are right 74.1% of
+the time" was mostly a statement about points where occlusion had failed to
+measure anything.
+
+**Instance 2 — the rationale reference.** `_rationale_refs` falls back to
+`{"statement"}` when no keyword family matches. Since `statement` is *also* the
+driver fallback, a point with no signal on either side scored as **agreement**.
+Absence on both sides was counted as concordance, which inflated the observed
+agreement rate and the permutation null together and produced a spurious "at
+chance" reading.
+
+**Why it is hard to see.** Both failures produce complete, plausible,
+well-populated output. Nothing is missing, no error is raised, and the category
+is the *most common* one — which reads as a finding rather than as a gap. The
+existing gate (`max_parse_failure_rate`) does not catch it, because these are not
+failures: the model returned parseable values, and the measurement ran to
+completion. It simply had no resolution.
+
+**The rule going forward.** A fallback category must not be shared between "the
+measurement selected this" and "the measurement produced nothing". Where a
+measurement can be uninformative, that outcome gets its own label, its own
+reported share, and exclusion from statistics that presuppose a measurement. If a
+default value appears in two roles that are later compared to each other, the
+comparison is structurally biased towards agreement.
+
+**Check when adding any categorical output:** what does this value mean when the
+measurement fails, is that the same as what it means when the measurement
+succeeds, and is the share of the first ever reported?

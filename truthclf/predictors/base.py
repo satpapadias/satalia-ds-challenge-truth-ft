@@ -53,6 +53,24 @@ class PredictionResult:
     parse_failures: int    # how many model outputs failed to parse a score
     n: int
     metrics: dict = field(default=None)
+    # Per row: did the model actually produce a usable answer for it?
+    #
+    # The neutral fallback is 50/100 in score mode and 0.5 in logprob mode, and a
+    # model that genuinely returns 50 produces exactly the same probability. So
+    # "the model declined to judge" and "the output could not be parsed" are
+    # indistinguishable in `probs`, and `parse_failures` only says how many of
+    # the latter there were, not which rows. Anything reading DIFFERENCES between
+    # probabilities — occlusion attribution above all — needs to know which
+    # specific rows carry a measurement.
+    #
+    # `probs` is deliberately unchanged. Encoding absence in it (NaN, None, a
+    # different sentinel) would propagate through calibration, thresholding and
+    # every metric, and would move the adopted record; the calibrators are fitted
+    # on this exact probability scale. The information is added alongside instead.
+    #
+    # None means the predictor does not report it, which is not the same as "all
+    # rows were measured" — test doubles and cached stand-ins may omit it.
+    measured: list = field(default=None)
 
 
 def compute_metrics(y_true, preds, probs) -> dict:

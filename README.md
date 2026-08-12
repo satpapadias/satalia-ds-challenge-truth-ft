@@ -63,8 +63,10 @@ flips **9.7%** — and that leaning on it buys nothing: speaker-driven predictio
 sit exactly on their own subset's majority-class rate (**+0.000 [−0.141,
 +0.115]**). The clearest signal runs the other way: on the **45.7%** of points
 where *no* metadata field moves the prediction at all, accuracy is **+0.204
-[+0.088, +0.285]** above that subset's baseline. The model is most reliable
-precisely where metadata is irrelevant to it.
+[+0.088, +0.285]** above that subset's baseline — one of six subsets tested, and
+the only interval excluding zero. That is most likely selection rather than
+cause: a statement the model judges without reference to metadata is plausibly a
+clear-cut one to begin with.
 
 ---
 
@@ -347,6 +349,24 @@ as concordance. Score-mode elicitation emits only ~17 distinct values, so a zero
 delta means "below this measurement's resolution", not "the claim's content
 decided it". With the undetermined points separated, the driver distribution is
 speaker-family 32.0%, other metadata 15.3%, statement 7.0%, undetermined 45.7%.
+
+*Driver versus correctness.* Each driver subset is compared against **its own**
+majority-class rate, because the subsets differ in class balance and a single
+global baseline would manufacture differences. **Six subsets were tested**, and
+only one — `undetermined`, at **+0.204 [+0.088, +0.285]** on n = 137 — has an
+interval excluding zero. No multiplicity correction is applied; at six tests a
+single nominal 95% interval is not the same as a 95% guarantee, and the effect is
+reported as large-and-well-powered rather than as a significance claim.
+Speaker-driven predictions sit exactly on their own baseline (+0.000 [−0.141,
++0.115], n = 78). Statement-driven proper (n = 21) cannot be separated from
+its baseline in either direction.
+
+**The undetermined result is selection, not causation.** A statement whose
+predicted probability does not move when metadata is removed is, by construction,
+one the model judges on the claim alone — and such statements are plausibly the
+clear-cut ones. Metadata-irrelevance and easiness are most likely the same
+property observed twice, rather than one producing the other. Nothing here
+supports "removing metadata would make the model more accurate".
 
 *Faithfulness, restated.* Agreement is scored only on the 163 points with a
 measurable driver: **0.356 [0.282, 0.429]** against a permutation null of

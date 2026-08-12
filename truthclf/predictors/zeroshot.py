@@ -112,28 +112,32 @@ class ZeroShotPredictor(Predictor):
 
     def _predict_score(self, rows):
         raw = self.client.score(self._messages(rows, "score"))
-        scores, parse_failures = [], 0
+        scores, measured, parse_failures = [], [], 0
         for text in raw:
             s = parse_score(text)
+            # Recorded per row rather than only counted, because the fallback
+            # value is indistinguishable from a genuine neutral score of 50.
+            measured.append(s is not None)
             if s is None:
                 parse_failures += 1
                 s = self.neutral_score
             scores.append(s)
         probs = [s / 100.0 for s in scores]
         preds = [1 if s >= 50.0 else 0 for s in scores]
-        return scores, probs, preds, parse_failures
+        return scores, probs, preds, parse_failures, measured
 
     def _predict_logprobs(self, rows):
         outputs = self.client.classify(self._messages(rows, "decision"))
-        probs, parse_failures = [], 0
+        probs, measured, parse_failures = [], [], 0
         for out in outputs:
             p = prob_from_logprobs(out.get("top_logprobs", {}))
+            measured.append(p is not None)
             if p is None:
                 parse_failures += 1
                 p = 0.5
             probs.append(p)
         preds = [1 if p >= self.threshold else 0 for p in probs]
-        return None, probs, preds, parse_failures
+        return None, probs, preds, parse_failures, measured
 
     def predict(self, points, labels=None) -> PredictionResult:
         if self.client is None:
@@ -149,11 +153,11 @@ class ZeroShotPredictor(Predictor):
             # on empty arrays, which previously surfaced as an opaque ValueError.
             return PredictionResult(scores=None, probs=[], preds=[],
                                     threshold=self.threshold, parse_failures=0,
-                                    n=0, metrics=None)
+                                    n=0, metrics=None, measured=[])
         if self.use_logprobs:
-            scores, probs, preds, parse_failures = self._predict_logprobs(rows)
+            scores, probs, preds, parse_failures, measured = self._predict_logprobs(rows)
         else:
-            scores, probs, preds, parse_failures = self._predict_score(rows)
+            scores, probs, preds, parse_failures, measured = self._predict_score(rows)
 
         threshold_used = self.threshold
         if self.calibrator is not None:
@@ -164,4 +168,7 @@ class ZeroShotPredictor(Predictor):
         return PredictionResult(
             scores=scores, probs=probs, preds=preds, threshold=threshold_used,
             parse_failures=parse_failures, n=len(rows), metrics=result_metrics,
+            # Calibration is a monotone map applied to every row alike, so it
+            # cannot turn an absent measurement into a present one.
+            measured=measured,
         )
