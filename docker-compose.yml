@@ -1,0 +1,173 @@
+# Six services: two MCP servers and four agents, one container each.
+#
+# Addressing. Every internal URL is a compose service name, never 127.0.0.1 --
+# each container has its own loopback, so a localhost URL would point a service
+# at itself. Compose resolves service names on the shared network, and the same
+# names become the only thing that changes when this moves to a managed
+# platform, where they are replaced by the platform's assigned hostnames.
+#
+# Agent card URLs are not configured here at all. Each agent derives the address
+# it advertises from the request that reached it, so the same container reports
+# http://zero-shot-predictor:9101 to a peer calling it by service name and
+# http://localhost:9101 to a browser on the published port -- both correct for
+# their caller. PUBLIC_BASE_URL exists only to override that behind a proxy that
+# rewrites the host.
+#
+# The orchestrator is deliberately NOT given MODEL_TOOLS_URL. Prediction reaches
+# it only through the predictor agents; the shortcut of calling the prediction
+# tool directly is unavailable rather than discouraged. Its only tool server is
+# data-tools, for metric computation.
+
+name: truthclf
+
+x-image: &image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: truthclf:local
+
+x-agent-env: &agent-env
+  # The token an agent requires of its callers, and that the orchestrator
+  # presents to its peers. Distinct from the public token below, so a leaked
+  # public token cannot drive the specialists directly.
+  AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+  HOST: 0.0.0.0
+  GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+
+services:
+  # --- MCP servers: agent-to-tool ------------------------------------------
+  data-tools:
+    <<: *image
+    container_name: truthclf-data-tools
+    command: ["python", "-m", "truthclf_mcp.data_tools", "--host", "0.0.0.0", "--port", "8081"]
+    # No provider credential and no network egress: every tool here is local and
+    # deterministic. That is the boundary the two-server split exists to draw.
+    environment:
+      TRUTHCLF_DATA: /app/data.csv
+    ports:
+      - "127.0.0.1:8081:8081"      # published for a generic MCP client
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8081/healthz', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s            # builds a TF-IDF index over the train split
+
+  model-tools:
+    <<: *image
+    container_name: truthclf-model-tools
+    command: ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0", "--port", "8082"]
+    environment:
+      # The only service that holds the provider credential.
+      TOGETHER_API_KEY: ${TOGETHER_API_KEY:?set TOGETHER_API_KEY in .env}
+      TRUTHCLF_FT_CACHE: /app/ft_eval_cache.json
+      TRUTHCLF_FT_IDENTITY: /app/ft_eval_identity.json
+      TRUTHCLF_CALIBRATOR_DIR: /app/results/calibrators
+    ports:
+      - "127.0.0.1:8082:8082"
+    volumes:
+      # The response cache is SQLite on a local path: safe across processes on
+      # one host, not across hosts. Persisted so restarts do not re-pay for
+      # answers already bought, and named so it is obvious it is not shared.
+      - model-tools-cache:/app/.llm_cache
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8082/healthz', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # --- specialist agents: each wraps one capability as MCP ------------------
+  zero-shot-predictor:
+    <<: *image
+    container_name: truthclf-zero-shot
+    command: ["python", "-m", "truthclf_agents.zero_shot", "--host", "0.0.0.0", "--port", "9101"]
+    environment:
+      <<: *agent-env
+      MODEL_TOOLS_URL: http://model-tools:8082/mcp
+      PORT: "9101"
+    ports:
+      - "127.0.0.1:9101:9101"      # published so its agent card can be fetched
+    depends_on:
+      model-tools:
+        # Agents probe their tool server at start-up, so a tool server that is
+        # not ready yet is a boot failure rather than a retry.
+        condition: service_healthy
+    healthcheck: &agent-health
+      test: ["CMD", "python", "-c",
+             "import os,urllib.request,sys; p=os.environ['PORT']; sys.exit(0 if urllib.request.urlopen(f'http://localhost:{p}/healthz', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  fine-tuned-predictor:
+    <<: *image
+    container_name: truthclf-fine-tuned
+    command: ["python", "-m", "truthclf_agents.fine_tuned", "--host", "0.0.0.0", "--port", "9102"]
+    environment:
+      <<: *agent-env
+      MODEL_TOOLS_URL: http://model-tools:8082/mcp
+      PORT: "9102"
+    ports:
+      - "127.0.0.1:9102:9102"
+    depends_on:
+      model-tools:
+        condition: service_healthy
+    healthcheck: *agent-health
+
+  explainer:
+    <<: *image
+    container_name: truthclf-explainer
+    command: ["python", "-m", "truthclf_agents.explainer", "--host", "0.0.0.0", "--port", "9103"]
+    environment:
+      <<: *agent-env
+      MODEL_TOOLS_URL: http://model-tools:8082/mcp
+      PORT: "9103"
+    ports:
+      - "127.0.0.1:9103:9103"
+    depends_on:
+      model-tools:
+        condition: service_healthy
+    healthcheck: *agent-health
+
+  # --- orchestrator: the entry point ---------------------------------------
+  orchestrator:
+    <<: *image
+    container_name: truthclf-orchestrator
+    command: ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0", "--port", "9100"]
+    environment:
+      <<: *agent-env
+      # The public token, presented by the caller to /verify and to the A2A
+      # route. Separate from AGENT_TOKEN above, which this service presents to
+      # its peers.
+      ORCHESTRATOR_TOKEN: ${ORCHESTRATOR_TOKEN:?set ORCHESTRATOR_TOKEN in .env}
+      PORT: "9100"
+      # Peers, by service name. Capability discovery happens once at start-up:
+      # the orchestrator fetches each card and builds its client from it.
+      ZERO_SHOT_AGENT_URL: http://zero-shot-predictor:9101
+      FINE_TUNED_AGENT_URL: http://fine-tuned-predictor:9102
+      EXPLAINER_AGENT_URL: http://explainer:9103
+      # Metric computation only. There is deliberately no MODEL_TOOLS_URL here.
+      DATA_TOOLS_URL: http://data-tools:8081/mcp
+      POOL_WEIGHT: ${POOL_WEIGHT:-1.0}
+      MAX_POINTS: ${MAX_POINTS:-50}
+    ports:
+      - "127.0.0.1:9100:9100"      # the only service a caller needs
+    depends_on:
+      # Peer discovery is a single attempt at boot with no retry, so every peer
+      # must be answering before this starts or it comes up permanently short.
+      zero-shot-predictor:
+        condition: service_healthy
+      fine-tuned-predictor:
+        condition: service_healthy
+      explainer:
+        condition: service_healthy
+      data-tools:
+        condition: service_healthy
+    healthcheck: *agent-health
+
+volumes:
+  model-tools-cache:

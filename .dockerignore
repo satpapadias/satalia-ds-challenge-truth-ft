@@ -1,0 +1,20 @@
+# Keep the build context small and keep secrets and local state out of images.
+.git
+.venv
+.env
+.llm_cache
+.llm_cache.json
+.pytest_cache
+.coverage
+__pycache__
+**/__pycache__
+*.pyc
+dist/
+notebooks/
+tests/
+docs/
+NOTES/
+ft_data/
+*.pdf
+*.pptx
+*.zip

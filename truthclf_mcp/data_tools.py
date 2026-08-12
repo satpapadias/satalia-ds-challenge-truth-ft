@@ -454,6 +454,22 @@ def retrieval(
     })
 
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+# Deliberately outside the MCP protocol and unauthenticated: a container
+# orchestrator probes this before any client has credentials, and it is how
+# dependent services learn this one is ready. It reports what was loaded rather
+# than a bare "ok", so a half-initialised server cannot pass.
+@server.custom_route("/healthz", methods=["GET"])
+async def healthz(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "server": "data-tools",
+                         "n_indexed": CORPUS.index_size,
+                         "splits": {"train": len(CORPUS.train), "val": len(CORPUS.val),
+                                    "test": len(CORPUS.test)}})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="truthclf data-tools MCP server")
     ap.add_argument("--host", default=os.environ.get("TRUTHCLF_MCP_HOST", "127.0.0.1"))
