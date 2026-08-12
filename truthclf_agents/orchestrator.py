@@ -164,10 +164,13 @@ async def verify(payload: dict, *, context_id: str) -> dict:
                             f"{err.detail[:200]}")
     n_uncovered = sum(1 for s in ft.values() if s.status == "unavailable")
     if n_uncovered:
+        # States only what this predictor did. Naming the survivor here would be
+        # a guess: when the other predictor has also failed, those statements get
+        # no verdict at all rather than a zero-shot one.
         warnings.append(
             f"the fine-tuned predictor has no recorded probability for "
-            f"{n_uncovered} of {len(row_ids)} statement(s); those verdicts come "
-            "from the zero-shot predictor alone and reconciliation did not run")
+            f"{n_uncovered} of {len(row_ids)} statement(s); reconciliation did "
+            "not run for those")
 
     # --- reconcile ----------------------------------------------------------
     results = [reconcile(zs[rid], ft[rid], w=POOL_WEIGHT) for rid in row_ids]
