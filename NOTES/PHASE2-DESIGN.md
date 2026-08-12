@@ -1184,3 +1184,85 @@ verdict, reporting both `n_scored` and `n_excluded`.
   predictors answer — the validation split — and is a measurement, not a code
   change.
 - **No published output schemas on the MCP tools** (carried over from Part 1).
+
+---
+
+## 25. Two silent wrong answers, found by running the deployed path
+
+Both were found by sending a novel statement through `POST /verify` — the
+ordinary external request, which no offline test exercises.
+
+### The fine-tuned path answered for a statement it had never seen
+
+`ft_eval_cache.json` maps `row_id -> probability`. A `row_id` is a position in
+`data.csv`, not a statement, so a caller supplying its own text under an
+existing `row_id` received another statement's probability, calibrated and
+labelled `ok`.
+
+The orchestrator assigns `row_id` by position when the caller omits it, so an
+ordinary request lands on `row_id 0` and gets row 0's answer. Confirmed
+numerically: `calibrated(cache["0"]) = 0.725283`, exactly the value reported.
+
+**This is the same defect already refused on the explain path** — occlusion
+builds ablated copies that keep the same `row_id`, which is why cached
+fine-tuned explain raises `CounterfactualNotAvailable`. The reasoning was
+correct there and not carried one function across, because on the predict path
+the `row_id` arrives from the caller rather than being synthesised locally. The
+underlying fact is identical: nothing bound a cache key to the text it was
+computed from.
+
+Worse, the partial-coverage fix from the previous step made it reachable. Before
+it, a novel row raised `FineTunedRowNotCached` and the batch was refused; after
+it, a novel row that happened to collide with an existing key was silently
+answered. A fix aimed at over-refusal turned an over-refusal into a wrong answer.
+
+**Fix:** `ft_eval_identity.json` (`row_id -> norm_key`, built by
+`scripts/build_ft_identity.py`, 3,908 entries) and a check on **both** keys.
+`norm_key` alone would be weaker than it looks — normalisation is known to
+over-merge — so a `row_id` hit with a `norm_key` miss is logged and refused
+separately from a plain absence.
+
+**What was affected:** my own standalone fine-tuned verification, which sent
+`row_id 233` with an invented statement and reported `prob=0.2545, ok`. The
+mixed-batch fan-out table was not affected (real rows, real ids), and neither is
+any recorded number.
+
+### The explainer rendered absent measurements as a confident explanation
+
+Every occlusion variant returned 0.5, so all deltas were 0.0, the driver
+defaulted to `statement`, and the rationale cross-check scored agreement.
+
+The obvious diagnosis — parse-failure fallbacks — was **wrong**.
+`parse_failures = 0`: the model genuinely returned the string `"50"` six times.
+`neutral_score = 50.0` is also the fallback value, so a real 50 and an absent
+measurement are indistinguishable in `probs` and separable only via the counter.
+The gate was working correctly and had nothing to fire on. A control on three
+real test rows gave occlusion spreads of 0.15–0.60, so score mode is sound; the
+uniform 50 is the model declining to judge an unverifiable invented claim.
+
+The real defect is structural: `statement` is both the fallback driver and the
+fallback rationale reference, so a point with no signal on either side scores as
+agreement. Absence on both sides counted as concordance.
+
+**Fix:** `driver: "undetermined"` when no field moves the probability at all,
+excluded from the cross-check, with the share reported as its own figure. See
+`docs/decisions.md` (2026-08-13) for the full before/after.
+
+### What this says about where to look
+
+Both defects live on the path a real caller takes and are invisible to every
+offline test, because the offline tests use rows from `data.csv` carrying their
+own identifiers. The tests were not merely silent about the first defect — four
+of them *encoded* it, passing precisely because a fabricated statement with a
+real `row_id` returned a real probability. They have been rewritten to use the
+statements the probabilities belong to.
+
+## 26. Batch ceilings and the parse-failure rate are per-deployment, not per-sample
+
+`truthclf_agents/explainer.py` had carried `max_parse_failure_rate = 0.004`,
+lifted from the value the recorded 1,800-row explainer sample needs. Applied as
+a per-request default at arbitrary batch size it is a different quantity: on a
+seven-row batch it permits nothing anyway, and on a large one it silently admits
+failures this agent never measured. Reverted to the tool's strict `0.0`. The
+explicit `0.004` stays in `scripts/regenerate_results.py`, where the sample it
+was measured on is the thing being processed, with both counts in a comment.

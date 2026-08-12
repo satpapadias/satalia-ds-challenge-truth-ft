@@ -250,18 +250,42 @@ def explainer_analysis(src, sample, labels, n_boot=10000, seed=0):
                      "delta_ci": [float(lo), float(hi)],
                      "above_baseline": bool(lo > 0)})
 
-    keyed = [explain._DRIVER_KEY[pp["driver"]] for pp in per]
-    refs = [set(pp["rationale_refs"]) for pp in per]
+    # The rationale cross-check is scored ONLY over points with a measurable
+    # driver. `undetermined` has no field to agree or disagree about, and
+    # `statement` is simultaneously the fallback driver and the fallback
+    # rationale reference -- so counting undetermined points would score absence
+    # on both sides as concordance and inflate the rate exactly where there is
+    # least to agree about.
+    determined = [pp for pp in per if pp["driver"] != "undetermined"]
+    n_undetermined = len(per) - len(determined)
+    keyed = [explain._DRIVER_KEY[pp["driver"]] for pp in determined]
+    refs = [set(pp["rationale_refs"]) for pp in determined]
     obs = float(np.mean([d in r for d, r in zip(keyed, refs)]))
-    null = np.array([np.mean([keyed[i] in refs[p[i]] for i in range(len(per))])
-                     for p in (rng.permutation(len(per)) for _ in range(n_boot // 5))])
+    null = np.array([np.mean([keyed[i] in refs[p[i]] for i in range(len(determined))])
+                     for p in (rng.permutation(len(determined))
+                               for _ in range(n_boot // 5))])
     pval = float((np.sum(null >= obs) + 1) / (len(null) + 1))
     agr = np.array([int(d in r) for d, r in zip(keyed, refs)])
     ob = [agr[rng.integers(0, len(agr), len(agr))].mean() for _ in range(n_boot)]
 
+    # Three-way collapse. `undetermined` is a share of the sample, not a
+    # property of the model, and is reported as its own category rather than
+    # folded into `statement` where it would masquerade as a finding.
+    dd = agg["driver_distribution"]
+    families = {
+        "statement": dd.get("statement", 0),
+        "speaker_family": dd.get("speaker_name", 0) + dd.get("speaker_affiliation", 0),
+        "other_metadata": dd.get("subjects", 0) + dd.get("statement_context", 0),
+        "undetermined": dd.get("undetermined", 0),
+    }
+
     return {"field_flip_table": agg["field_table"].to_dict("records"),
-            "driver_distribution": agg["driver_distribution"],
+            "driver_distribution": dd,
+            "driver_families": families,
+            "n_undetermined": agg["n_undetermined"],
+            "undetermined_rate": agg["undetermined_rate"],
             "rationale_occlusion_agreement_rate": agg["rationale_occlusion_agreement_rate"],
+            "n_agreement_scored": agg["n_agreement_scored"],
             "driver_vs_baseline": rows,
             "rationale_agreement": {
                 "observed": obs,
@@ -269,6 +293,8 @@ def explainer_analysis(src, sample, labels, n_boot=10000, seed=0):
                 "null_mean": float(null.mean()),
                 "null_ci": [float(np.percentile(null, 2.5)), float(np.percentile(null, 97.5))],
                 "p_value": pval, "above_chance": bool(pval < 0.05),
+                "n_scored": len(determined),
+                "n_undetermined_excluded": n_undetermined,
                 "n_categories": len(set(keyed)),
                 "mean_refs_per_point": float(np.mean([len(r) for r in refs]))},
             "examples": explain.examples_frame(res, k=4).to_dict("records")}
@@ -520,8 +546,17 @@ def main():
               open("results/curves.json", "w"))
     print("wrote results/curves.json")
 
-    ex = json.load(open("explain_results.json"))
-    ex["metrics"] = exp_metrics
+    # Rewritten in full, not merged into whatever was on disk. Previously only
+    # `metrics` was refreshed, so the aggregate block survived re-runs and drifted
+    # until it disagreed with the same figures in results/summary.json. A record
+    # file that is only partly regenerated is a stale number waiting to be quoted.
+    ex = {"aggregate": {k: exp_agg[k] for k in (
+              "field_flip_table", "driver_distribution", "driver_families",
+              "n_undetermined", "undetermined_rate",
+              "rationale_occlusion_agreement_rate", "n_agreement_scored",
+              "driver_vs_baseline", "rationale_agreement")},
+          "metrics": exp_metrics,
+          "examples": exp_agg["examples"]}
     ex["metrics"]["ece_detail"] = exp_ece
     ex["_provenance"] = payload["_provenance"]
     json.dump(ex, open("explain_results.json", "w"), indent=2, default=float)

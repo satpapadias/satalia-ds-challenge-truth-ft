@@ -57,13 +57,14 @@ zero-shot decision baseline reaches 0.668 / ECE 0.061. Fine-tuning yields a
 CI-backed, significant accuracy gain over the matched zero-shot baseline
 (+0.031, p = 6.3e-07) but **no measurable calibration gain**; calibration itself
 is what makes the probabilities usable (ECE 0.316 → 0.061). The explainer
-(leave-one-field-out occlusion) shows the model leans on a **speaker shortcut**
-(speaker identity is the deciding input for ~26% of predictions and its removal
-flips ~10%), and crucially that this shortcut **hurts**: predictions driven by
-the statement content are right 74.1% of the time versus 56.4% when driven by
-the speaker. The model's free-text rationales agree with the occlusion-identified
-driver only ~46% of the time, i.e. they are often post-hoc rationalizations
-rather than faithful explanations.
+(leave-one-field-out occlusion) shows the model leans on a **speaker shortcut** —
+speaker identity is the deciding input for **26%** of predictions and removing it
+flips **9.7%** — and that leaning on it buys nothing: speaker-driven predictions
+sit exactly on their own subset's majority-class rate (**+0.000 [−0.141,
++0.115]**). The clearest signal runs the other way: on the **45.7%** of points
+where *no* metadata field moves the prediction at all, accuracy is **+0.204
+[+0.088, +0.285]** above that subset's baseline. The model is most reliable
+precisely where metadata is irrelevant to it.
 
 ---
 
@@ -182,8 +183,9 @@ variation is normal — the trends are what matter):
 | paired fine-tuning effect | Δacc ~+0.031, McNemar p ~1e-6 |
 | paired calibration effect | ΔECE ~+0.010, CI straddles zero — **no effect** |
 | calibration vs raw probabilities | ECE ~0.316 → ~0.061 |
-| explainer faithfulness | rationale↔occlusion agreement ~0.46 |
-| driver vs correctness | statement-driven (~0.74) > speaker-driven (~0.56) |
+| explainer, measurable drivers | ~54% of points; the other ~46% are `undetermined` |
+| explainer faithfulness | agreement ~0.356 on those points, vs a ~0.287 permutation null |
+| driver vs correctness | speaker-driven sits *on* its own baseline (~+0.00); `undetermined` is ~+0.20 above its own |
 
 ---
 
@@ -334,6 +336,30 @@ occlusion-identified driver with the field the rationale cites and reports the
 agreement rate. **Token/word-level attribution is out of scope** — it is expensive,
 noisy, and the wrong granularity for field-structured metadata; field-level
 occlusion is the right unit.
+
+*When occlusion measures nothing.* On **137 of 300** sampled points (**45.7%**) no
+occluded field moves the probability at all. Those are reported as
+`driver: "undetermined"`, not as statement-driven. The distinction is not
+cosmetic: `statement` is simultaneously the fallback driver *and* the fallback
+rationale reference, so folding these points into it both inflates that category
+and scores them as rationale/occlusion agreement — absence on both sides counted
+as concordance. Score-mode elicitation emits only ~17 distinct values, so a zero
+delta means "below this measurement's resolution", not "the claim's content
+decided it". With the undetermined points separated, the driver distribution is
+speaker-family 32.0%, other metadata 15.3%, statement 7.0%, undetermined 45.7%.
+
+*Faithfulness, restated.* Agreement is scored only on the 163 points with a
+measurable driver: **0.356 [0.282, 0.429]** against a permutation null of
+**0.287 [0.233, 0.344]**, **p = 0.014**. On that subset the rationales carry
+*some* detectable information about which field actually drove the prediction —
+they are not pure post-hoc narration. Two limits belong with that number: the
+restriction to measurable-driver points was decided after inspecting the data
+(it followed from a defect fix, not from hypothesis search), and n = 163 with a
+single test. It is evidence of a weak signal, not a faithfulness guarantee. The
+earlier figure — 0.457 against a 0.436 null, p = 0.19, "at chance" — was computed
+over all 300 points including the 137 where there was nothing to agree about;
+both the observed rate and the null were inflated by the shared `statement`
+default.
 
 ---
 

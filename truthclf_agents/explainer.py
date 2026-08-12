@@ -29,14 +29,6 @@ MODEL_TOOLS_URL = env_url("MODEL_TOOLS_URL", "http://127.0.0.1:8082/mcp")
 
 logger = logging.getLogger(AGENT_NAME)
 
-# The explainer's own sample contains a small number of statements too short to
-# carry a checkable claim, on which the model legitimately declines to answer.
-# A zero tolerance would refuse to explain those batches outright, so the
-# allowance is set slightly above the rate observed on the recorded sample and
-# passed explicitly rather than left at the tool's stricter default.
-DEFAULT_MAX_PARSE_FAILURE_RATE = 0.004
-
-
 class ExplainerExecutor(JsonAgentExecutor):
     agent_name = AGENT_NAME
 
@@ -51,8 +43,14 @@ class ExplainerExecutor(JsonAgentExecutor):
             "with_rationale": payload.get("with_rationale", True),
             "driver_eps": payload.get("driver_eps", 0.05),
             "elicitation": payload.get("elicitation", "score"),
-            "max_parse_failure_rate": payload.get(
-                "max_parse_failure_rate", DEFAULT_MAX_PARSE_FAILURE_RATE),
+            # Left at the tool's strict default: any neutral fallback fails.
+            # A tolerance measured on one fixed 1,800-row sample is not the same
+            # quantity when applied per request at an arbitrary batch size -- on
+            # a seven-row batch it would permit nothing anyway, and on a large
+            # one it would silently admit failures this agent never measured.
+            # A caller who knows its batch contains acceptable refusals can pass
+            # a rate explicitly.
+            "max_parse_failure_rate": payload.get("max_parse_failure_rate", 0.0),
         }
         if payload.get("labels") is not None:
             arguments["labels"] = payload["labels"]

@@ -210,24 +210,34 @@
       }
     ],
     "driver_distribution": {
-      "statement": 158,
+      "statement": 21,
       "speaker_affiliation": 18,
       "speaker_name": 78,
+      "undetermined": 137,
       "statement_context": 20,
       "subjects": 26
     },
-    "rationale_occlusion_agreement_rate": 0.457,
+    "driver_families": {
+      "statement": 21,
+      "speaker_family": 96,
+      "other_metadata": 46,
+      "undetermined": 137
+    },
+    "n_undetermined": 137,
+    "undetermined_rate": 0.4567,
+    "rationale_occlusion_agreement_rate": 0.356,
+    "n_agreement_scored": 163,
     "driver_vs_baseline": [
       {
-        "driver": "statement",
-        "n": 158,
-        "class_rate_true": 0.47468354430379744,
-        "majority_class_rate": 0.5253164556962026,
-        "accuracy": 0.740506329113924,
-        "delta": 0.21518987341772144,
+        "driver": "undetermined",
+        "n": 137,
+        "class_rate_true": 0.46715328467153283,
+        "majority_class_rate": 0.5328467153284672,
+        "accuracy": 0.7372262773722628,
+        "delta": 0.2043795620437956,
         "delta_ci": [
-          0.10759493670886078,
-          0.28481012658227844
+          0.08759124087591252,
+          0.2846715328467153
         ],
         "above_baseline": true
       },
@@ -240,7 +250,7 @@
         "delta": 0.0,
         "delta_ci": [
           -0.14102564102564108,
-          0.1282051282051282
+          0.11538461538461542
         ],
         "above_baseline": false
       },
@@ -254,6 +264,19 @@
         "delta_ci": [
           -0.11538461538461542,
           0.3076923076923077
+        ],
+        "above_baseline": false
+      },
+      {
+        "driver": "statement",
+        "n": 21,
+        "class_rate_true": 0.5238095238095238,
+        "majority_class_rate": 0.5238095238095238,
+        "accuracy": 0.7619047619047619,
+        "delta": 0.23809523809523803,
+        "delta_ci": [
+          -0.04761904761904767,
+          0.38095238095238093
         ],
         "above_baseline": false
       },
@@ -285,20 +308,22 @@
       }
     ],
     "rationale_agreement": {
-      "observed": 0.45666666666666667,
+      "observed": 0.3558282208588957,
       "ci": [
-        0.4033333333333333,
-        0.5133333333333333
+        0.2822085889570552,
+        0.4294478527607362
       ],
-      "null_mean": 0.4355766666666667,
+      "null_mean": 0.287,
       "null_ci": [
-        0.3933333333333333,
-        0.48
+        0.23297546012269937,
+        0.34355828220858897
       ],
-      "p_value": 0.18940529735132433,
-      "above_chance": false,
+      "p_value": 0.013493253373313344,
+      "above_chance": true,
+      "n_scored": 163,
+      "n_undetermined_excluded": 137,
       "n_categories": 5,
-      "mean_refs_per_point": 1.5866666666666667
+      "mean_refs_per_point": 1.6134969325153374
     },
     "examples": [
       {

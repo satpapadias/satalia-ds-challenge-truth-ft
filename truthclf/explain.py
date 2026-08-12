@@ -10,6 +10,13 @@ Two layers, with explicit faithfulness framing:
    much each removal shifts the predicted probability and whether it flips the
    label. This is causal, input-level attribution.
 
+   A point is attributed to a field when removing that field moves the
+   probability by more than driver_eps; to `statement` when some field moves it
+   but none by enough; and to `undetermined` when no field moves it at all. The
+   last is not a weaker form of the second: it means the measurement carries no
+   information about this point, so no attribution is made and the point is
+   excluded from the rationale cross-check.
+
 2. Model's own rationale (READABLE, not necessarily faithful). One sentence on
    why the model judged the statement True/False. Labelled as plausible only.
 
@@ -141,10 +148,30 @@ def explain(model, points, labels=None, with_rationale=True,
                       "flip": int((pr >= threshold) != bool(bp))}
         md = {f: abs(occ[f]["delta"]) for f in OCCLUSION_FIELDS}
         top = max(md, key=md.get)
-        driver = top if md[top] > driver_eps else "statement"
+        # DEGENERATE OCCLUSION. When no candidate field moves the probability at
+        # all, occlusion has measured nothing about this point, and the ranking
+        # over md is a tie among zeros. Attributing such a point to `statement`
+        # asserts a finding the measurement does not contain -- it says "the
+        # claim's content decided it" when the honest reading is "removing
+        # metadata changed nothing detectable at this resolution". Score-mode
+        # elicitation emits only ~17 distinct values, so this is common rather
+        # than rare, and it is reported as its own category.
+        #
+        # all_metadata is excluded from the test deliberately: it is a baseline
+        # rather than a candidate driver, so it cannot decide an attribution.
+        if max(md.values()) == 0.0:
+            driver = "undetermined"
+        else:
+            driver = top if md[top] > driver_eps else "statement"
         rat = rats[i]
         refs = _rationale_refs(rat, p) if rat is not None else None
-        agree = (_DRIVER_KEY[driver] in refs) if refs is not None else None
+        # Agreement is undefined when the driver is undetermined. `statement` is
+        # both the fallback driver and the fallback rationale reference, so a
+        # point with no signal on either side would otherwise score as a match:
+        # absence on both sides counted as concordance, inflating the statistic
+        # exactly where there is least to agree about.
+        agree = (None if driver == "undetermined" or refs is None
+                 else _DRIVER_KEY[driver] in refs)
         per.append({"row_id": p.row_id, "statement": p.statement,
                     "label": (labels[i] if labels is not None else None),
                     "pred": bp, "base_prob": round(base, 3), "occlusion": occ,
@@ -175,13 +202,22 @@ def aggregate(result):
         rows.append({"removed_field": f, "flip_rate": round(flips / n, 3),
                      "mean_abs_delta": round(mad, 3)})
     drivers = collections.Counter(pp["driver"] for pp in per)
+    # Points where occlusion measured nothing. Reported as a share rather than
+    # folded into `statement`, because it is a property of the measurement
+    # rather than a finding about the model.
+    n_undetermined = drivers.get("undetermined", 0)
     agrees = [pp["agree"] for pp in per if pp["agree"] is not None]
     return {"field_table": pd.DataFrame(rows),
             "parse_failures": result.get("parse_failures"),
             "parse_failure_rate": result.get("parse_failure_rate"),
             "driver_distribution": dict(drivers),
+            "n_undetermined": n_undetermined,
+            "undetermined_rate": round(n_undetermined / n, 4) if n else None,
+            # Scored only over points with a measurable driver; the denominator
+            # is reported so the rate is never read against the wrong n.
             "rationale_occlusion_agreement_rate": (round(sum(agrees) / len(agrees), 3)
                                                    if agrees else None),
+            "n_agreement_scored": len(agrees),
             "n": n}
 
 

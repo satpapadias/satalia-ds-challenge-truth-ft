@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import functools
 import glob
+import logging
 import math
 import os
 import warnings
@@ -50,6 +51,10 @@ FINE_TUNED_MODEL = os.environ.get(
     "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d")
 FT_PROB_CACHE = os.environ.get(
     "TRUTHCLF_FT_CACHE", os.path.join(PROJECT_ROOT, FT.FT_PROB_CACHE))
+# Companion to the probabilities: which statement each one was computed for.
+# Built by scripts/build_ft_identity.py.
+FT_IDENTITY = os.environ.get(
+    "TRUTHCLF_FT_IDENTITY", os.path.join(PROJECT_ROOT, "ft_eval_identity.json"))
 
 # Measured on a batch refetch of 6,075 rows: about 150 input tokens per row at
 # the base model's published rate. Used only for the pre-flight cost estimate.
@@ -174,26 +179,80 @@ def _metrics_with_bins(y, preds, probs) -> dict:
 # Fine-tuned serving
 # ---------------------------------------------------------------------------
 @functools.lru_cache(maxsize=1)
-def _stored_row_ids() -> frozenset[int]:
-    """Row ids the recorded fine-tuned probabilities cover.
+def _stored_identity() -> dict[int, str]:
+    """row_id -> the normalised statement key each stored probability belongs to.
 
-    A membership test, not a value read: values still come from
-    load_cached_probs, which stays the single reader. Cached because the file is
-    written once by the evaluation and never changes while the server runs.
+    A row_id is a position in the source dataset, not a statement. Without this
+    map the serving path cannot tell whether the probability it is about to
+    return was computed for the statement being asked about, and a caller
+    supplying its own text under an existing row_id gets another statement's
+    probability, correctly calibrated and labelled as a successful prediction.
+
+    Built by scripts/build_ft_identity.py and cached: the file is written once
+    beside the probabilities and does not change while the server runs.
     """
     import json as _json
-    if not os.path.exists(FT_PROB_CACHE):
-        return frozenset()
-    with open(FT_PROB_CACHE, encoding="utf-8") as f:
-        return frozenset(int(k) for k in _json.load(f))
+    if not os.path.exists(FT_IDENTITY):
+        raise FileNotFoundError(
+            f"{FT_IDENTITY} not found. Stored fine-tuned probabilities cannot be "
+            "served without it, because a row_id alone does not identify a "
+            "statement. Build it with scripts/build_ft_identity.py.")
+    with open(FT_IDENTITY, encoding="utf-8") as f:
+        return {int(k): v for k, v in _json.load(f)["identity"].items()}
+
+
+def _stored_row_ids() -> frozenset[int]:
+    """Row ids the recorded fine-tuned probabilities cover."""
+    return frozenset(_stored_identity())
 
 
 def _partition_by_coverage(rows):
-    """Split rows into those with a recorded probability and those without."""
-    covered_ids = _stored_row_ids()
-    covered = [r for r in rows if r.row_id in covered_ids]
-    missing = [r.row_id for r in rows if r.row_id not in covered_ids]
-    return covered, missing
+    """Split rows by whether a stored probability exists FOR THAT STATEMENT.
+
+    Both keys are checked. Matching the row_id alone is what allowed another
+    statement's probability to be served; matching the normalised key alone
+    would lose the binding to the recorded evaluation. A row_id that matches
+    while the statement does not is the dangerous case, so it is separated from
+    a plain absence and reported.
+    """
+    identity = _stored_identity()
+    covered, absent, mismatched = [], [], []
+    for r in rows:
+        expected = identity.get(r.row_id)
+        if expected is None:
+            absent.append(r.row_id)
+        elif expected != r.norm_key:
+            mismatched.append(r.row_id)
+        else:
+            covered.append(r)
+    if mismatched:
+        # Normalisation is exact-match after lowering and punctuation removal,
+        # and it is known to over-merge occasionally, so equality is a strong
+        # signal of identity but not a proof of it. A mismatch, by contrast, is
+        # conclusive: the statement asked about is not the statement scored.
+        logging.getLogger(__name__).warning(
+            "fine-tuned identity mismatch on row_ids %s: a stored probability "
+            "exists for these row_ids but was computed for a different "
+            "statement. Refusing to serve it.", mismatched[:10])
+    return covered, absent, mismatched
+
+
+def _verify_identity(rows):
+    """Refuse rows whose stored probability belongs to a different statement."""
+    _, absent, mismatched = _partition_by_coverage(rows)
+    if mismatched:
+        raise FineTunedRowNotCached(
+            f"{len(mismatched)} row_id(s) have a stored probability that was "
+            f"computed for a DIFFERENT statement (first few: {mismatched[:5]}). "
+            "A row_id is a position in the source dataset, not a statement, so "
+            "the stored value is not an answer to this question and is not "
+            "served.")
+    if absent:
+        raise FineTunedRowNotCached(
+            f"{len(absent)} statement(s) have no stored fine-tuned probability "
+            f"(first few row_ids: {absent[:5]}). Stored probabilities cover the "
+            "statements evaluated during the endpoint session; scoring others "
+            "requires a live endpoint.")
 
 
 def _finetuned_stored(rows):
@@ -207,6 +266,7 @@ def _finetuned_stored(rows):
     A row with no stored probability is an error. It never falls back to a live
     call and never falls back to the zero-shot predictor.
     """
+    _verify_identity(rows)
     try:
         return FT.load_cached_probs(rows, FT_PROB_CACHE)
     except FileNotFoundError as e:
@@ -347,7 +407,13 @@ def predict(
             # Coverage is partial by nature, so a batch mixing recorded and
             # unrecorded statements scores what it can and names the rest. The
             # omitted rows are still never answered by another predictor.
-            kept, missing_row_ids = _partition_by_coverage(rows)
+            kept, absent, mismatched = _partition_by_coverage(rows)
+            missing_row_ids = sorted(absent + mismatched)
+            if mismatched:
+                warns.append(
+                    f"{len(mismatched)} row_id(s) have a stored probability "
+                    "computed for a different statement and were refused, not "
+                    f"served: {mismatched[:5]}.")
             if missing_row_ids and y is not None:
                 # Labels must be filtered with the rows they belong to, or the
                 # metrics would be computed against another statement's truth.

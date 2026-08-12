@@ -563,3 +563,97 @@ artifact on this provider without an always-on endpoint.
 
 **Cost of settling it:** one 400 response, no tokens billed. Nothing was
 provisioned. `endpoints.list()` confirms 0 endpoints for this model.
+
+---
+
+## 2026-08-13 — Stored fine-tuned probabilities are bound to statement identity
+
+**The defect.** `ft_eval_cache.json` maps a `row_id` to a probability and nothing
+else. A `row_id` is a position in `data.csv`, not a statement. Any caller
+supplying its own text under a `row_id` that happens to exist received a
+*different statement's* probability — correctly calibrated, thresholded, and
+labelled `status: "ok"`.
+
+Demonstrated end to end: a novel statement sent with no `row_id` was assigned
+index `0` by position and came back with `calibrated(cache["0"]) = 0.725283`,
+which belongs to a Barack Obama statement in the test split.
+
+**Fix.** `scripts/build_ft_identity.py` writes `ft_eval_identity.json`:
+`row_id -> normalised statement key`, one entry per stored probability (3,908 of
+3,908 bound). The serving path checks **both** keys and refuses on a mismatch.
+`norm_key` is the identity the pipeline already uses for contradiction detection
+and split membership, so this introduces no new notion of sameness.
+
+**Both keys, not just the normalised one.** Normalisation is exact match after
+lowercasing and punctuation removal, and `_suspicious_normalization_merge` exists
+because it is known to over-merge, so equality is strong evidence of identity but
+not proof. A `row_id` that matches while the statement does not is logged as a
+warning and refused, separately from a plain absence — the two are different
+situations and only one of them was ever dangerous.
+
+**Scope.** No recorded number was affected: every figure in the adopted record
+comes from real rows carrying their own `row_id`s. The defect only reached
+callers supplying their own statements, which is the normal case for the deployed
+service and never happens in the offline evaluation.
+
+---
+
+## 2026-08-13 — Occlusion that measures nothing is `undetermined`, not `statement`
+
+**Finding.** On **137 of 300** sampled points (**45.7%**) no occluded field moves
+the predicted probability at all. Previously every one of those was attributed to
+`statement`, because the driver rule falls back to it when nothing exceeds
+`driver_eps`. That fallback conflates two different claims: *"some field moved
+it, none by enough"* and *"nothing moved it at all"*.
+
+The second is not a weak version of the first. Score-mode elicitation emits only
+~17 distinct values, so a zero delta means the measurement had no resolution
+here, not that the claim's content decided the prediction.
+
+**Why it mattered twice.** `statement` is simultaneously the fallback driver and
+the fallback rationale reference (`_rationale_refs` returns `{"statement"}` when
+no keyword family matches). A point with no signal on either side therefore
+scored as *agreement* — absence on both sides counted as concordance, inflating
+the faithfulness statistic exactly where there was least to agree about.
+
+**Fix.** A point with no measurable driver reports `driver: "undetermined"` and is
+excluded from the rationale cross-check (`agree: None`). The undetermined share is
+reported as its own figure. This is separate from the parse-failure gate, which
+was working correctly and had nothing to fire on: the model genuinely returned
+`"50"` for every variant on the points that prompted the investigation
+(`parse_failures = 0`), so these were real measurements of a neutral score, not
+absent ones.
+
+**Effect on the record** (300-point sample, regenerated):
+
+| | before | after |
+|---|---|---|
+| driver `statement` | 158 | 21 |
+| driver `undetermined` | — | 137 (45.7%) |
+| agreement, observed | 0.457 (n=300) | 0.356 (n=163) |
+| permutation null | 0.436 | 0.287 |
+| p-value | 0.19 — at chance | **0.014 — above chance** |
+| statement-driven vs own baseline | +0.215 [+0.108, +0.285] | +0.238 [−0.048, +0.381] (n=21) |
+| `undetermined` vs own baseline | — | **+0.204 [+0.088, +0.285]** |
+| speaker-driven vs own baseline | +0.000 [−0.141, +0.128] | +0.000 [−0.141, +0.115] |
+
+**The conclusion reverses, and the reversal is the point.** Restricted to points
+where a driver was actually measured, the rationales carry *detectable*
+information about which field drove the prediction. The earlier "at chance"
+result was an artifact of scoring 137 points that had nothing to agree about,
+which inflated the observed rate and the null together.
+
+Two limits stated with it: the restriction to measurable-driver points was
+decided after inspecting the data — it followed from this defect fix rather than
+from hypothesis search — and it rests on n = 163 and one test.
+
+**The other reversal.** The old "statement-driven predictions are right 74.1% of
+the time" was 158 points of which 137 were undetermined. Statement-driven proper
+(n = 21) cannot be separated from its own baseline. The category that clearly
+beats its baseline is `undetermined`: the model is most accurate precisely where
+metadata is irrelevant to it.
+
+**Also fixed.** `explain_results.json` was only ever partly regenerated — the
+entrypoint refreshed `metrics` and left `aggregate` from whatever was on disk, so
+it had drifted until it disagreed with the same figures in `results/summary.json`.
+It is now rewritten in full.
