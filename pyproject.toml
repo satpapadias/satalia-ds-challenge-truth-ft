@@ -37,9 +37,14 @@ dev = ["pytest>=7.0"]
 mcp = [
     "mcp>=1.2",
 ]
+a2a = [
+    "a2a-sdk>=1.1.2",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [tool.setuptools]
-packages = ["truthclf", "truthclf.predictors", "truthclf_mcp"]
+packages = ["truthclf", "truthclf.predictors", "truthclf_mcp", "truthclf_agents"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -155,3 +155,67 @@ def test_cached_finetuned_predict_needs_no_client(monkeypatch):
                      fine_tuned_source="cached")
     assert out["provenance"]["served_by"] == "cached_replay"
     assert out["provenance"]["live_calls"] == 0
+
+
+# --- partial coverage of the stored fine-tuned probabilities ---------------
+# Coverage is partial by nature: the recorded probabilities cover the validation
+# and test splits, so a caller's own statements are usually outside them. A batch
+# mixing recorded and unrecorded statements must score what it can.
+def _covered_ids(n=2):
+    return sorted(MT._stored_row_ids())[:n]
+
+
+def test_default_refuses_a_batch_containing_an_unrecorded_statement():
+    """The strict default is preserved: no silent omission."""
+    points = [{"row_id": i, "statement": "x"} for i in _covered_ids()]
+    points.append({"row_id": 10_000_000, "statement": "never scored"})
+    with pytest.raises(ToolError) as e:
+        MT.predict(model="fine_tuned", points=points, fine_tuned_source="cached")
+    assert "FineTunedRowNotCached" in str(e.value)
+
+
+def test_omit_scores_the_covered_rows_and_names_the_rest():
+    covered = _covered_ids()
+    points = [{"row_id": i, "statement": "x"} for i in covered]
+    points.append({"row_id": 10_000_000, "statement": "never scored"})
+    out = MT.predict(model="fine_tuned", points=points,
+                     fine_tuned_source="cached", on_missing="omit")
+    assert out["n"] == len(covered)
+    assert out["missing_row_ids"] == [10_000_000]
+    assert {p["row_id"] for p in out["predictions"]} == set(covered)
+    assert out["provenance"]["served_by"] == "cached_replay"
+    assert any("missing_row_ids" in w for w in out["warnings"])
+
+
+def test_omit_never_substitutes_another_predictor():
+    """An omitted row must be absent, not answered by something else."""
+    out = MT.predict(model="fine_tuned",
+                     points=[{"row_id": 10_000_000, "statement": "never scored"}],
+                     fine_tuned_source="cached", on_missing="omit")
+    assert out["n"] == 0
+    assert out["predictions"] == []
+    assert out["missing_row_ids"] == [10_000_000]
+    assert out["metrics"] is None
+
+
+def test_omit_filters_labels_with_the_rows_they_belong_to():
+    """Metrics must never be scored against another statement's truth."""
+    covered = _covered_ids()
+    points = [{"row_id": i, "statement": "x"} for i in covered]
+    points.append({"row_id": 10_000_000, "statement": "never scored"})
+    labels = [1] * len(covered) + [0]
+    out = MT.predict(model="fine_tuned", points=points, labels=labels,
+                     fine_tuned_source="cached", on_missing="omit")
+    # Metrics exist and were computed over the kept rows only.
+    assert out["metrics"] is not None
+    assert out["n"] == len(covered)
+
+
+def test_default_is_unchanged_when_every_row_is_covered():
+    covered = _covered_ids()
+    points = [{"row_id": i, "statement": "x"} for i in covered]
+    strict = MT.predict(model="fine_tuned", points=points, fine_tuned_source="cached")
+    omitted = MT.predict(model="fine_tuned", points=points,
+                         fine_tuned_source="cached", on_missing="omit")
+    assert strict["predictions"] == omitted["predictions"]
+    assert omitted["missing_row_ids"] == []

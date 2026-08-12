@@ -4,7 +4,9 @@ For each component: the challenge-spec requirement it satisfies (quoted), the
 library APIs it calls with their import paths, why those rather than the
 alternatives, and the things that are easy to get wrong on a rewrite.
 
-Spec quotes are from `Data Science Challenge - Truth.pdf`, pages 1–4.
+Part 1 spec quotes are from `Data Science Challenge - Truth.pdf`, pages 1–4.
+Part 2 spec quotes are from `internal/Data Science Challenge - Truth - Full.pdf`,
+pages 5–8, which is the authoritative brief for both parts.
 
 ---
 
@@ -580,3 +582,605 @@ framework's own rejection of `predict` without a `model`.
   unchanged (constraints, defaults and required lists all verified identical),
   but the functions are now directly callable and therefore directly testable.
   Found by the first test that called a handler without naming every argument.
+
+---
+
+# Part 2 — the agent network
+
+Spec quotes in this part are from `internal/Data Science Challenge - Truth - Full.pdf`,
+pages 5–8. (The `agent_community_spec.html` sitting beside it is a different
+document — a brand-campaign brief — and is not the specification for this work.)
+
+Status: **design proposed, awaiting review. Nothing built.**
+
+Library: `a2a-sdk 1.1.2`, no agent framework.
+
+---
+
+## 11. Agent roster and cards
+
+### Requirement
+
+> "Capability discovery: each agent publishes an agent card / capability
+> descriptor so others can find out what it does and how to call it."
+
+> "Aim for one deployable unit per agent rather than a single monolith, so the
+> A2A boundaries between agents are real and not just in-process function calls."
+
+### APIs called
+
+```python
+from a2a.types import (AgentCard, AgentSkill, AgentCapabilities, AgentInterface,
+                       AgentProvider, SecurityScheme, HTTPAuthSecurityScheme,
+                       SecurityRequirement)
+from a2a.utils import AGENT_CARD_WELL_KNOWN_PATH   # "/.well-known/agent-card.json"
+from a2a.utils import TransportProtocol            # JSONRPC | GRPC | HTTP+JSON
+from a2a.server.routes import (create_agent_card_routes, create_jsonrpc_routes,
+                               add_a2a_routes_to_fastapi)
+# create_agent_card_routes(agent_card, card_modifier=None,
+#                          card_url="/.well-known/agent-card.json") -> list[Route]
+```
+
+**These are protobuf message types in 1.1.2, not pydantic models.** They are
+constructed with keyword arguments and have no `.model_fields`; introspection
+goes through `.DESCRIPTOR`. Code written against a pydantic-style `AgentCard`
+from older examples will not run.
+
+### The card has no top-level `url`
+
+In this SDK version the address lives in `supported_interfaces`, a repeated
+`AgentInterface{url, protocol_binding, tenant, protocol_version}`. Older
+examples show a single `url` field on the card; that field does not exist here.
+
+### How the URL is populated when it is not known until after deploy
+
+Cloud Run assigns the service URL at create time, so it cannot be baked into the
+image and cannot be written into a card at build time.
+
+Two different problems, two different answers:
+
+**An agent's own URL** is resolved per request by a `card_modifier` passed to
+`create_agent_card_routes`. It fills `supported_interfaces[0].url` from
+`PUBLIC_BASE_URL` if set, otherwise from the forwarded host on the incoming
+request. Every agent therefore advertises a correct address with no
+configuration at all, and the environment variable exists only to override.
+
+**Peer URLs the orchestrator needs** come from Terraform: each agent service's
+`uri` attribute is passed to the orchestrator as an environment variable. This
+is acyclic — the orchestrator depends on the three agents, and none of them
+depends on the orchestrator — so it resolves in a single apply.
+
+Rejected alternatives: baking URLs into images (needs a rebuild per environment);
+a second Terraform apply to close a self-reference (two applies, and the first
+leaves cards advertising the wrong address); deriving the URL from the documented
+`service-projectnumber.region.run.app` pattern (correct today, but it is a
+platform convention rather than a contract, and a wrong card is a silent failure
+— an agent that advertises an address it does not answer on).
+
+### The four cards
+
+Shared across all four: `provider.organization`, `protocol_version` `"1.0"`,
+`protocol_binding` `JSONRPC`, `default_input_modes` and `default_output_modes`
+`["application/json"]`, and bearer-token security.
+
+`application/json` rather than `text/plain` because every payload here is a
+batch of structured records. Statements, probabilities and per-field occlusion
+deltas travel as A2A `DataPart`s; a human-readable summary rides along as a
+`TextPart` for display, but is never the machine-readable channel.
+
+| agent | skill id | consumes over MCP | streaming |
+|---|---|---|---|
+| `truthclf-orchestrator` | `verify_statements` | data-tools `metrics` only | advertised |
+| `truthclf-zero-shot-predictor` | `predict_zero_shot` | model-tools `predict` | no |
+| `truthclf-fine-tuned-predictor` | `predict_fine_tuned` | model-tools `predict` | no |
+| `truthclf-explainer` | `explain_predictions` | model-tools `explain` | yes |
+
+Security on every card: one `HTTPAuthSecurityScheme(scheme="bearer")` named
+`bearer`, with a matching entry in `security_requirements`, and the same scheme
+repeated at skill level so a reader of one skill sees the requirement without
+resolving the whole card. This satisfies:
+
+> "Sensible security. Don't leave the endpoint wide open. A simple API key or
+> bearer token (passed in a header) is enough."
+
+The orchestrator's token is the one handed to the reviewer. The three worker
+agents carry their own separate token, so a leaked public token cannot drive
+them directly.
+
+### What is easy to get wrong
+
+1. **Advertising an address the agent does not answer on.** A card is a
+   contract; a stale URL in it fails at the caller with no error on the serving
+   side. This is why the URL is resolved per request rather than configured.
+2. **Assuming pydantic.** These are protobuf types; keyword construction works,
+   attribute-style validation does not.
+3. **Putting the batch in a `TextPart`.** It survives one hop and then someone
+   parses prose.
+
+---
+
+## 12. Task lifecycle
+
+### Requirement
+
+> "Task delegation: the orchestrator hands work to the predictor and explainer
+> agents over A2A rather than calling functions in-process."
+
+### APIs called
+
+```python
+from a2a.client import (ClientFactory, ClientConfig, A2ACardResolver,
+                        ClientCallInterceptor, create_client)
+# A2ACardResolver(httpx_client, base_url, agent_card_path=AGENT_CARD_WELL_KNOWN_PATH)
+#   .get_agent_card()
+# Client.send_message(request: SendMessageRequest, *, context=None)
+#     -> AsyncIterator[StreamResponse]
+
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+# AgentExecutor.execute(context: RequestContext, event_queue: EventQueue) -> None
+from a2a.server.tasks import TaskUpdater, InMemoryTaskStore, DatabaseTaskStore
+# TaskUpdater.submit / start_work / complete / failed / reject / add_artifact
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.types import TaskState
+#   TASK_STATE_SUBMITTED | WORKING | COMPLETED | FAILED | CANCELED
+#   | INPUT_REQUIRED | REJECTED | AUTH_REQUIRED
+```
+
+### One request, ten statements
+
+Discovery happens once at start-up, not per request: the orchestrator resolves
+all three peer cards and holds the clients. A card fetch per request would add a
+round trip to every call for information that changes only on redeploy.
+
+| # | hop | method | state after |
+|---|---|---|---|
+| 0 | client → orchestrator | `POST /verify` (HTTP, bearer) | — |
+| 1 | orchestrator internal | assign a stable `row_id` per point; open run context | orchestrator task `SUBMITTED` → `WORKING` |
+| 2 | orchestrator → zero-shot | A2A `message/send` | remote `SUBMITTED` |
+| 3 | zero-shot → model-tools | MCP `tools/call` `predict` (model=zero_shot, 10 points) | remote `WORKING` |
+| 4 | zero-shot → orchestrator | task result, one `DataPart` | remote `COMPLETED` |
+| 5 | orchestrator → fine-tuned | A2A `message/send`, issued concurrently with step 2 | remote `SUBMITTED` |
+| 6 | fine-tuned → model-tools | MCP `tools/call` `predict` (model=fine_tuned, source=cached) | remote `WORKING` |
+| 7 | fine-tuned → orchestrator | task result, or a per-row unavailable marker | remote `COMPLETED` |
+| 8 | orchestrator internal | log-odds pooling per statement | orchestrator task still `WORKING` |
+| 9 | orchestrator → explainer | A2A `message/stream` | remote `SUBMITTED` → `WORKING` |
+| 10 | explainer → model-tools | MCP `tools/call` `explain` (60 occlusion + 10 rationale calls) | remote `WORKING`, incremental updates |
+| 11 | explainer → orchestrator | final task result | remote `COMPLETED` |
+| 12 | orchestrator → data-tools | MCP `tools/call` `metrics` — only when labels were supplied | — |
+| 13 | orchestrator → client | consolidated JSON body | orchestrator task `COMPLETED` |
+
+Steps 2 and 5 run concurrently. Step 9 runs strictly after step 8: the explainer
+does not vote, so it cannot be on the critical path to the verdict, and running
+it in parallel would mean explaining a verdict that had not been decided.
+
+### Where task state lives, and what a restart costs
+
+Each agent owns its own task store. The default `InMemoryTaskStore` is
+per-instance, which has two consequences that must be stated rather than
+discovered:
+
+- **`tasks/get` is not reliable under autoscaling.** With more than one Cloud Run
+  instance behind a service, a follow-up lookup can land on an instance that
+  never saw the task. Initial deployment pins the agents to a single instance;
+  `DatabaseTaskStore` is the fix when that ceases to be acceptable.
+- **A restart loses task history.** Acceptable for work that completes inside
+  one request, not acceptable if resubscription is ever offered.
+
+**If the orchestrator is killed mid-fan-out:** the caller's HTTP connection
+drops and the orchestrator's own task record disappears with the instance. The
+three worker agents do not notice — they run their tasks to completion and their
+results are stranded with no collector. Nothing is corrupted, because no agent
+writes shared state; the cost is wasted provider spend on the zero-shot and
+explainer calls, and the caller must retry blind.
+
+The response cache absorbs most of a retry's cost: identical prompts are cache
+hits on the second attempt, so a retried request is much cheaper than the first
+but not free.
+
+This is a real gap, not a solved problem. Closing it needs a durable
+orchestrator task store plus an idempotency key from the caller so a retry
+rejoins the original run rather than starting a second one. Both are deferred,
+and neither should be described as working until it is.
+
+---
+
+## 13. Synchronous or streaming
+
+### The relevant latencies
+
+| agent | 10 statements | at its ceiling | basis |
+|---|---|---|---|
+| fine-tuned | milliseconds | milliseconds | dictionary lookup plus a two-parameter calibration map; no network |
+| zero-shot | ~0.4–0.5 s of inference | ~13 s at 500 points | 16 client workers, one request per point, ~0.4 s recorded per-call latency |
+| explainer | 70 provider requests, ~2–4 s | 350 requests at 50 points, tens of seconds | six occlusion calls plus one rationale call per point |
+
+The zero-shot figures are inference only; a cold Cloud Run instance adds
+container start to the first request.
+
+### Recommendation
+
+- **fine-tuned: `message/send`.** It answers from a dictionary. An SSE stream
+  would add framing overhead and a second round trip to deliver one event.
+- **zero-shot: `message/send`.** Ten statements is a single wave of concurrent
+  calls; even a full 500-point batch stays an order of magnitude inside Cloud
+  Run's default 300 s request timeout. There are no meaningful intermediate
+  results to stream — probabilities are useful as a complete set.
+- **explainer: `message/stream`.** It is the long pole by an order of magnitude,
+  it is the only agent whose work decomposes into natural incremental units
+  (one explanation per statement), and it is the only one that can plausibly
+  approach a request timeout. Streaming also keeps the connection demonstrably
+  alive, which matters when the alternative is a caller unable to distinguish
+  slow from hung.
+- **orchestrator: advertises `streaming: true`, serves `/verify` synchronously.**
+  The spec's own verification is a single curl returning one body, so `/verify`
+  must answer that way. Advertising streaming keeps the option open for an A2A
+  client that wants per-statement results as they settle.
+
+**One implementation note that changes how this reads.** In `a2a-sdk 1.1.2`,
+`Client.send_message` always returns an `AsyncIterator[StreamResponse]`, and
+`ClientConfig.streaming` (default `True`) selects the transport underneath. So
+the choice above is a per-peer configuration value, not two code paths. There is
+no branch to maintain, and revisiting a decision later is a one-line change.
+
+---
+
+## 14. Failure semantics
+
+### Requirement
+
+> "The deployed Orchestrator must accept a set of statements and run the full
+> flow: fan out to the predictor agents via A2A, obtain explanations from the
+> explainer agent, and return — for each statement — a final True/False verdict
+> and an explanation."
+
+> "Aggregation / consensus: the orchestrator combines the agents' outputs into a
+> single answer per statement, including a simple reconciliation strategy for
+> when the zero-shot and fine-tuned predictors disagree."
+
+### The fine-tuned agent's availability is a normal condition, not an edge case
+
+The fine-tuned agent answers from stored probabilities covering the validation
+and test splits — 3,908 rows. **Any statement outside that set returns
+`FineTunedRowNotCached`.** For an external caller sending their own statements,
+that is the common case, not a rare one.
+
+So the design treats a missing fine-tuned answer as an expected input to
+reconciliation rather than as an error, and it is the same code path as a
+timeout, a dead agent, or a short batch.
+
+### Per-source status
+
+Every statement carries a status for each predictor:
+
+`ok` · `unavailable` (the row cannot be scored — `FineTunedRowNotCached`) ·
+`timeout` · `error` · `not_returned` (the agent answered but omitted this row)
+
+Only `ok` contributes to pooling. Everything else lands in one branch, which is
+what makes a live fine-tuned endpoint a configuration change rather than a code
+change: the branch simply stops being taken.
+
+### Reconciliation
+
+Log-odds pooling of the two calibrated probabilities with weight `w`, shipping
+at `w = 1` (defer to fine-tuned). The fitted value is a constant.
+
+| available | verdict | `reconciliation.applied` |
+|---|---|---|
+| both `ok` | pooled probability | `true` |
+| exactly one `ok` | that predictor's probability, unmodified | `false`, `reason: "single_source"` |
+| neither `ok` | `null`, `status: "no_verdict"` | `false`, `reason: "no_source"` |
+
+A single-source result **is a verdict**, not a failure. It is reported with
+`reconciliation.applied: false`, the reason, and which sources were used, so it
+cannot be mistaken for a two-predictor result. The distinction is carried by a
+required field rather than by absence, because a reader who does not look for a
+missing key will assume both predictors answered.
+
+`agreement` in the spec's illustrative response is reported per source with its
+status, so `{"zero_shot": true, "fine_tuned": null}` is legible as "the
+fine-tuned predictor did not answer" rather than as "the fine-tuned predictor
+said false".
+
+### Run level
+
+A run returns HTTP 200 whenever the orchestrator itself completed, even if every
+statement is single-source. `run.degraded` is true when any source failed, with
+a `run.warnings` list naming what and how many. HTTP 5xx is reserved for the
+orchestrator failing, which is the only case where the caller has nothing.
+
+Metrics, when labels are supplied, are computed over statements that have a
+verdict, and the response states both the number scored and the number excluded.
+Reporting an accuracy over a silently reduced subset would be a different
+quantity from the one the caller asked for. Metrics are requested from the
+data-tools `metrics` tool, so they arrive with bootstrap intervals and the ECE
+occupied-bin count rather than as bare floats, and are reported separately for
+each source and for the reconciled verdict.
+
+### What is easy to get wrong
+
+1. **Aligning results by position.** Every response must be joined on `row_id`,
+   assigned by the orchestrator before fan-out. A short batch joined by index
+   silently attaches one statement's probability to another statement's label.
+2. **Letting a single-source verdict look like a consensus.** Hence the required
+   `applied` flag and per-source statuses.
+3. **Treating `FineTunedRowNotCached` as an error.** It would turn the ordinary
+   external request into a failed run.
+
+---
+
+## 15. Trace propagation
+
+### Requirement
+
+> "Observability. Emit logs/traces that make it possible to follow a single
+> request as it fans out across the agents — for example a request or trace ID
+> that ties the Orchestrator call to the predictor and explainer hops."
+
+### Two identifiers, deliberately
+
+- **`traceparent`** — W3C Trace Context, the transport-level trace. Cloud Run
+  populates a trace context on ingress, and Cloud Logging correlates log entries
+  to traces automatically when an entry carries
+  `logging.googleapis.com/trace`. Using the standard header means the platform
+  understands the trace without a bespoke correlator.
+- **A2A `context_id`** — the logical run. A2A already carries it across tasks
+  and messages, so the whole fan-out shares one run identifier at the protocol
+  level, independent of whether tracing is enabled or exporting.
+
+Both are logged on every entry. The trace links spans; the context id links the
+agents' own records of the same run.
+
+### How each hop carries it
+
+| hop | mechanism |
+|---|---|
+| client → orchestrator | Cloud Run ingress; an inbound `traceparent` is honoured, otherwise one is generated |
+| orchestrator → agent (A2A) | `ClientCallInterceptor.before()` injects `traceparent` into the outbound request |
+| agent → MCP server | the MCP client accepts a preconfigured `httpx.AsyncClient`; a request hook on it injects the same header |
+| within an agent | `a2a.utils.telemetry` (`trace_class`, `trace_function`) instruments the SDK's own spans when OpenTelemetry is enabled |
+
+The MCP hop is the one that would otherwise be invisible, and it is where the
+provider spend happens — a trace that stops at the agent boundary cannot answer
+which tool call was slow or expensive.
+
+### Where it is logged
+
+Structured JSON on stdout, which Cloud Run ingests without an agent. Each entry
+carries `logging.googleapis.com/trace`, `logging.googleapis.com/spanId`,
+`severity`, the A2A `context_id`, the `task_id`, the agent name, and — for tool
+calls — the tool name, point count, cache hits and live calls.
+
+Rejected: a hand-rolled `X-Request-ID`. It would work and cost nothing to
+implement, but Cloud Logging would treat it as an opaque field, so correlation
+would mean text search rather than the console's own trace view.
+
+---
+
+## 16. What is deliberately not A2A
+
+### Requirement
+
+> "In short: A2A is between agents; MCP is between an agent and its tools. A
+> strong submission makes that separation clear in both the design and the
+> running system."
+
+> "A2A usage: genuine agent-to-agent communication (capability discovery + task
+> delegation), not just internal HTTP calls."
+
+Every place a plain HTTP call is tempting, and the ruling:
+
+| # | call | verdict |
+|---|---|---|
+| 1 | client → orchestrator `POST /verify` | **Legitimate.** The spec's own verification is `curl -X POST .../verify`. The caller is a grader, not an agent. The orchestrator also serves A2A on the same app, so it is a real agent; `/verify` is a thin adapter that builds an A2A message and hands it to the same executor. |
+| 2 | `GET /.well-known/agent-card.json` | **Legitimate.** Plain HTTP, but it *is* A2A's discovery mechanism. |
+| 3 | any agent → MCP server | **Legitimate and required.** MCP is agent-to-tool by definition. |
+| 4 | `GET /healthz` probes | **Legitimate.** Infrastructure, not agent communication. |
+| 5 | **orchestrator → model-tools `predict`, skipping the predictor agents** | **Not legitimate.** Faster, simpler, and numerically identical — which is exactly what makes it tempting. It would reduce the predictor agents to decoration and is precisely what the evaluation criteria call out. |
+| 6 | explainer → zero-shot agent for the predictions it explains | **Not needed.** The MCP `explain` tool performs its own occlusion predictions; routing through another agent would add a hop and change nothing. |
+| 7 | orchestrator → data-tools `metrics` | **Legitimate.** Metric computation is a tool, not an agent capability, and the spec asks for a shared supporting tool consumed over MCP. |
+
+**Item 5 is enforced by configuration, not by discipline: the orchestrator's
+container is not given the model-tools URL or credential.** It therefore cannot
+take the shortcut even if someone later adds code that tries. Prediction reaches
+the orchestrator only through the predictor agents; the only MCP server it can
+address is data-tools.
+
+The generic-client requirement —
+
+> "Demonstrate that the tools also work when called from a generic MCP client,
+> not just from your agents."
+
+— is already satisfied: both MCP servers were exercised over streamable HTTP
+with a stock client session, independently of any agent.
+
+---
+
+## 17. Open questions for this step
+
+- **Durable orchestrator task state and caller idempotency.** Named in section
+  12 as a real gap. Not solved, and deferred deliberately rather than described
+  as working.
+- **Agent instance pinning.** In-memory task stores mean one instance per agent
+  service until a database-backed store is introduced.
+- **The pooling weight `w`.** Shipping at 1. Fitting it requires a set where
+  both predictors answer, which is the validation split; that is a measurement,
+  not a code change.
+
+---
+
+# Part 2, built — the agent network
+
+Status: **four agents running and verified locally.** Containers and IaC next.
+
+```
+orchestrator            http://127.0.0.1:9100   card /.well-known/agent-card.json   public POST /verify
+zero-shot predictor     http://127.0.0.1:9101   card /.well-known/agent-card.json
+fine-tuned predictor    http://127.0.0.1:9102   card /.well-known/agent-card.json
+explainer               http://127.0.0.1:9103   card /.well-known/agent-card.json
+```
+
+## 18. Two design claims, checked rather than assumed
+
+### Transport selection — confirmed, and the card is authoritative
+
+`BaseClient.send_message` branches on
+`not self._config.streaming or not self._card.capabilities.streaming`. Streaming
+is used only when **both** the client's configuration and the agent's advertised
+capability allow it, so the card can veto but never impose.
+
+Verified live with an interceptor recording the method actually invoked, with
+the client configured to stream in every case:
+
+| agent | card `streaming` | method used |
+|---|---|---|
+| zero-shot | false | `send_message` |
+| fine-tuned | false | `send_message` |
+| explainer | true | `send_message_streaming` |
+
+The consequence is better than the design assumed: the transport is expressed
+once, on the card, and no per-peer client configuration is needed. An agent
+declares how it wants to be called and every caller honours it.
+
+### The `card_modifier` hook — the design was wrong
+
+`create_agent_card_routes(agent_card, card_modifier, card_url)` calls
+`card_modifier(card)`. **It is passed only the card and never the request**, so
+it cannot derive the advertised address from the host that was actually reached
+— which is exactly what the design relied on.
+
+Corrected: the card is served from the agent's own route, which has the request
+in hand, and is still serialised with the SDK's `agent_card_to_dict`, so the
+wire format is the protocol's. Verified: with no proxy headers the card
+advertises the local address; behind `x-forwarded-host` /
+`x-forwarded-proto` it advertises the external one, with no restart and no
+configuration.
+
+## 19. What was built
+
+| module | role |
+|---|---|
+| `truthclf_agents/common.py` | request identity, JSON logging, bearer auth, base-URL resolution |
+| `truthclf_agents/cards.py` | the four cards, and the request-aware card route |
+| `truthclf_agents/serve.py` | the A2A app: JSON in and out of message parts, task lifecycle |
+| `truthclf_agents/mcp_client.py` | the agent-to-tool client |
+| `truthclf_agents/peers.py` | discovery and the agent-to-agent client |
+| `truthclf_agents/pooling.py` | reconciliation, pure and independently testable |
+| `truthclf_agents/{zero_shot,fine_tuned,explainer,orchestrator}.py` | one deployable unit each |
+
+### APIs called
+
+```python
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import add_a2a_routes_to_fastapi, create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
+from a2a.server.request_handlers.response_helpers import agent_card_to_dict
+from a2a.client import ClientFactory, ClientConfig, ClientCallInterceptor
+from a2a.client.card_resolver import A2ACardResolver
+from a2a.types import (AgentCard, AgentSkill, AgentCapabilities, AgentInterface,
+                       Message, Part, Role, Task, TaskState, TaskStatus,
+                       SendMessageRequest)
+from a2a.utils import AGENT_CARD_WELL_KNOWN_PATH, DEFAULT_RPC_URL, TransportProtocol
+from google.protobuf import json_format, struct_pb2
+```
+
+## 20. Four defects found by building it
+
+Each was found by running the thing, not by reading it.
+
+**1. A status update cannot be the first event of a task.** `TaskUpdater.submit()`
+publishes a `TaskStatusUpdateEvent`, and the server rejects one that arrives
+before the task exists: *"Agent should enqueue Task before TaskStatusUpdateEvent
+event"*. The executor, not the updater, brings a task into being — it must
+enqueue the `Task` itself when `context.current_task` is `None`.
+
+**2. Tool errors arrived wrapped and unmatchable.** The MCP transport runs inside
+an anyio task group, so anything raised inside the client's context managers
+surfaces as a `BaseExceptionGroup`. A caller's `except ToolCallFailed` therefore
+never matched, and a recoverable condition — a statement with no recorded
+probability — was reported as an unhandled error with no usable detail. Fixed by
+raising the result check outside those blocks and flattening any group that
+still escapes.
+
+**3. Every number crosses A2A as a double.** Data parts are protobuf `Struct`
+values, which have no integer type: a prediction of `1` arrives as `1.0` and a
+row id as `233.0`. Anything used as an identifier or a count is coerced
+explicitly at the boundary. Left alone, a row id used as a dictionary key
+silently fails to match and every result looks absent.
+
+**4. One unseen statement voided the whole fine-tuned batch.** The stored-probability
+reader refuses a batch containing any row it has no value for — correct as a
+default, since silently dropping rows is worse. But partial coverage is this
+predictor's normal condition, so a batch mixing recorded and new statements lost
+*all* its fine-tuned answers, and every verdict fell back to single-source. This
+contradicted the per-statement design.
+
+Fixed at the tool: `predict` gained `on_missing="error" | "omit"`. The default is
+unchanged. Under `omit` the tool scores what it can and returns the rest in
+`missing_row_ids` — it still never substitutes another predictor, it just says
+which statements it could not answer. Labels are filtered alongside their rows,
+or the metrics would be scored against another statement's truth.
+
+## 21. Reconciliation is interpolation, not evidence accumulation
+
+The weights sum to one, so pooling is a weighted average in log-odds space. Two
+predictors that agree do **not** produce a more confident pool than either alone.
+
+That is deliberate, and it is the opposite of what a naive-Bayes-style sum would
+do. Summing log-odds treats the predictors as independent evidence and drives
+agreement towards certainty — wrong here, because both share a base model, a
+prompt and a training signal, so their errors are strongly correlated and their
+agreement carries little information. A test pins the interpolation property; an
+earlier version of that test asserted the accumulating behaviour and was wrong.
+
+## 22. Verified end to end
+
+Every agent standalone: card fetched over plain HTTP, one A2A message sent, the
+resulting MCP tool call confirmed in the reply's provenance, and the RPC route
+rejecting an unauthenticated request with 401 while the card stays open.
+
+The full fan-out, through `POST /verify` on the orchestrator, over a batch mixing
+two statements the fine-tuned predictor has recorded probabilities for with one
+it has never seen:
+
+| statement | zero-shot | fine-tuned | verdict | reconciliation |
+|---|---|---|---|---|
+| recorded | 0.675 | 0.642 | true | pooled, `applied: true` |
+| recorded | 0.362 | 0.255 | false | pooled, `applied: true` |
+| new | 0.579 | unavailable | true | `applied: false`, `single_source` |
+
+At `w = 1` the pooled probability equals the fine-tuned one exactly, which is
+what deferring to it means. The third statement is a verdict, carries
+`agreement.fine_tuned: null` rather than `false`, and states in its own
+`reconciliation.detail` that pooling did not run and why. The run is marked
+`degraded` with a warning naming how many statements were affected.
+
+Aggregate metrics arrive from the data-tools `metrics` tool with bootstrap
+intervals and the ECE occupied-bin count, over the statements that received a
+verdict, reporting both `n_scored` and `n_excluded`.
+
+## 23. What is easy to get wrong here
+
+1. **Joining agent replies by position.** Every reply is joined on the
+   orchestrator-assigned `row_id`. A short or reordered batch joined by index
+   attaches one statement's probability to another statement's label, and
+   nothing downstream can detect it. This is why `missing_row_ids` exists rather
+   than an implicit "shorter list means the tail is missing".
+2. **Treating partial coverage as failure.** It is the normal condition for any
+   caller sending their own statements, and it shares one code path with
+   timeouts and dead agents so that a live endpoint later removes a condition
+   rather than changing the logic.
+3. **Serving the card from a static configuration.** A card is a contract; an
+   address it advertises but does not answer on fails at the caller with nothing
+   logged locally.
+
+## 24. Still open
+
+- **Durable orchestrator task state and caller idempotency.** A killed
+  orchestrator still strands its peers' completed work.
+- **In-memory task stores** mean one instance per agent service until a shared
+  store is introduced.
+- **The pooling weight `w`** ships at 1. Fitting it needs a set where both
+  predictors answer — the validation split — and is a measurement, not a code
+  change.
+- **No published output schemas on the MCP tools** (carried over from Part 1).

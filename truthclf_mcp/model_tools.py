@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import glob
 import math
 import os
@@ -172,6 +173,29 @@ def _metrics_with_bins(y, preds, probs) -> dict:
 # ---------------------------------------------------------------------------
 # Fine-tuned serving
 # ---------------------------------------------------------------------------
+@functools.lru_cache(maxsize=1)
+def _stored_row_ids() -> frozenset[int]:
+    """Row ids the recorded fine-tuned probabilities cover.
+
+    A membership test, not a value read: values still come from
+    load_cached_probs, which stays the single reader. Cached because the file is
+    written once by the evaluation and never changes while the server runs.
+    """
+    import json as _json
+    if not os.path.exists(FT_PROB_CACHE):
+        return frozenset()
+    with open(FT_PROB_CACHE, encoding="utf-8") as f:
+        return frozenset(int(k) for k in _json.load(f))
+
+
+def _partition_by_coverage(rows):
+    """Split rows into those with a recorded probability and those without."""
+    covered_ids = _stored_row_ids()
+    covered = [r for r in rows if r.row_id in covered_ids]
+    missing = [r.row_id for r in rows if r.row_id not in covered_ids]
+    return covered, missing
+
+
 def _finetuned_stored(rows):
     """Per-row fine-tuned probabilities from the recorded evaluation session.
 
@@ -273,6 +297,12 @@ def predict(
         description="Budget ceiling on uncached provider calls. Refuses rather "
                     "than exceeding. This is a spend limit, not an approval."
     )] = MAX_PREDICT_POINTS,
+    on_missing: Annotated[Literal["error", "omit"], Field(
+        description="For the stored fine-tuned path, what to do about statements "
+                    "with no recorded probability. 'error' refuses the batch; "
+                    "'omit' scores the rest and lists the ones it could not, in "
+                    "missing_row_ids. Neither substitutes another predictor."
+    )] = "error",
 ) -> dict:
     """Score a set of statements and, given labels, evaluate the predictions."""
     check_batch(len(points), MAX_PREDICT_POINTS, "points", "predict")
@@ -306,18 +336,37 @@ def predict(
                            "cache_hits": 0, "live_calls": 0, "cached_session": None},
             "estimate": estimate, "warnings": warns})
 
+    missing_row_ids: list[int] = []
     if model == "fine_tuned" and fine_tuned_source == "cached":
-        raw = [float(p) for p in _finetuned_stored(rows)]
-        served_by = "cached_replay"
-        parse_failures = 0
-        cache_hits, live_calls = len(rows), 0
-        cached_session = (f"stored per-row probabilities from the dedicated "
-                          f"endpoint evaluation ({os.path.basename(FT_PROB_CACHE)})")
         if elicitation != "logprob":
             raise ValueError(
                 "stored fine-tuned probabilities were produced by single-token "
                 "logprob elicitation; serving them as elicitation='score' would "
                 "mislabel their scale")
+        if on_missing == "omit":
+            # Coverage is partial by nature, so a batch mixing recorded and
+            # unrecorded statements scores what it can and names the rest. The
+            # omitted rows are still never answered by another predictor.
+            kept, missing_row_ids = _partition_by_coverage(rows)
+            if missing_row_ids and y is not None:
+                # Labels must be filtered with the rows they belong to, or the
+                # metrics would be computed against another statement's truth.
+                keep = {r.row_id for r in kept}
+                y = [label for r, label in zip(rows, y) if r.row_id in keep]
+            rows = kept
+            if missing_row_ids:
+                warns.append(
+                    f"{len(missing_row_ids)} of "
+                    f"{len(rows) + len(missing_row_ids)} statement(s) have no "
+                    "recorded fine-tuned probability and were omitted; their "
+                    "row_ids are in missing_row_ids. They were not scored by "
+                    "any other model.")
+        raw = [float(p) for p in _finetuned_stored(rows)] if rows else []
+        served_by = "cached_replay"
+        parse_failures = 0
+        cache_hits, live_calls = len(rows), 0
+        cached_session = (f"stored per-row probabilities from the dedicated "
+                          f"endpoint evaluation ({os.path.basename(FT_PROB_CACHE)})")
     else:
         _require_key()
         if len(rows) > max_live_calls:
@@ -361,9 +410,12 @@ def predict(
     return _clean_json({
         "n": len(rows),
         "predictions": predictions,
+        # Statements this call could not score. Empty unless on_missing="omit".
+        "missing_row_ids": missing_row_ids,
         "threshold": threshold,
         "parse_failures": parse_failures,
-        "metrics": _metrics_with_bins(y, preds, probs) if y is not None else None,
+        "metrics": (_metrics_with_bins(y, preds, probs)
+                    if y is not None and rows else None),
         "provenance": {
             "model_id": served_model,
             "served_by": served_by,

@@ -1,0 +1,93 @@
+"""Explainer agent.
+
+Wraps the explainer, reached as an MCP tool call to model-tools. It explains the
+zero-shot predictor by default, which is the only predictor whose counterfactual
+queries can currently be answered: occlusion needs the model re-scored with each
+metadata field removed, and recorded probabilities cannot answer that.
+
+This agent does not vote. It runs after the verdict is decided and contributes a
+driver and a rationale to the response, never to the decision.
+
+Run:  python -m truthclf_agents.explainer [--host H] [--port P]
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+
+from a2a.server.agent_execution import RequestContext
+
+from . import mcp_client
+from .cards import explainer_card
+from .common import BearerAuth, configure_logging, env_url, log_event, timed
+from .serve import JsonAgentExecutor, build_app, run
+
+AGENT_NAME = "truthclf-explainer"
+MODEL_TOOLS_URL = env_url("MODEL_TOOLS_URL", "http://127.0.0.1:8082/mcp")
+
+logger = logging.getLogger(AGENT_NAME)
+
+# The explainer's own sample contains a small number of statements too short to
+# carry a checkable claim, on which the model legitimately declines to answer.
+# A zero tolerance would refuse to explain those batches outright, so the
+# allowance is set slightly above the rate observed on the recorded sample and
+# passed explicitly rather than left at the tool's stricter default.
+DEFAULT_MAX_PARSE_FAILURE_RATE = 0.004
+
+
+class ExplainerExecutor(JsonAgentExecutor):
+    agent_name = AGENT_NAME
+
+    async def handle(self, payload: dict, context: RequestContext) -> tuple[dict, str]:
+        points = payload.get("points") or []
+        arguments = {
+            # Defaulted here rather than required, because the fine-tuned model
+            # cannot answer occlusion queries today. Passing it through still
+            # lets a caller ask, and get the specific reason it cannot be done.
+            "model": payload.get("model", "zero_shot"),
+            "points": points,
+            "with_rationale": payload.get("with_rationale", True),
+            "driver_eps": payload.get("driver_eps", 0.05),
+            "elicitation": payload.get("elicitation", "score"),
+            "max_parse_failure_rate": payload.get(
+                "max_parse_failure_rate", DEFAULT_MAX_PARSE_FAILURE_RATE),
+        }
+        if payload.get("labels") is not None:
+            arguments["labels"] = payload["labels"]
+            arguments["scheme"] = payload.get("scheme", "primary")
+
+        with timed() as t:
+            result = await mcp_client.call_tool(MODEL_TOOLS_URL, "explain", arguments)
+
+        log_event(logger, "explained", n=result["n"], duration_ms=t.ms,
+                  provider_calls=result["n_predictions"],
+                  parse_failures=result["parse_failures"])
+
+        drivers = result["aggregate"]["driver_distribution"]
+        top = max(drivers, key=drivers.get) if drivers else "none"
+        return result, (f"Explained {result['n']} statement(s) by field occlusion; "
+                        f"most common driver: {top}.")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=AGENT_NAME)
+    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 9103)))
+    args = ap.parse_args()
+
+    configure_logging(AGENT_NAME)
+    auth = BearerAuth("AGENT_TOKEN")
+
+    async def startup():
+        tools = await mcp_client.probe(MODEL_TOOLS_URL)
+        log_event(logger, "connected to model-tools", url=MODEL_TOOLS_URL, tools=tools)
+
+    app = build_app(agent_name=AGENT_NAME, executor=ExplainerExecutor(),
+                    card_builder=explainer_card, auth=auth, on_startup=startup)
+    run(app, args.host, args.port, AGENT_NAME)
+
+
+if __name__ == "__main__":
+    main()
