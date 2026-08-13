@@ -443,12 +443,25 @@ def predict(
         # Calibration is applied below from the registry artifact, uniformly for
         # the live and stored paths, so the predictor is built without one.
         predictor = _build_predictor(model, elicitation)
+        # Counted, not assumed. The client tracks calls that actually reached the
+        # provider, so responses served from the on-disk cache are excluded.
+        # Reporting len(rows) as live_calls would state a spend that did not
+        # happen and hide that a request cost nothing.
+        client = getattr(predictor, "client", None)
+        before = getattr(client, "n_api_calls", None)
         with _live_call(model):
             result = predictor.predict(rows)
+        after = getattr(client, "n_api_calls", None)
         raw = [float(p) for p in result.probs]
         parse_failures = result.parse_failures
         served_by = "live"
-        cache_hits, live_calls = 0, len(rows)
+        if before is None or after is None:
+            # A client that does not count. None reads as "not reported"; a zero
+            # would read as "measured none".
+            cache_hits, live_calls = None, None
+        else:
+            live_calls = after - before
+            cache_hits = len(rows) - live_calls
         cached_session = None
         if parse_failures:
             warns.append(

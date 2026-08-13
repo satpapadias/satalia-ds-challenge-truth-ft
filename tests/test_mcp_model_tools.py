@@ -262,3 +262,57 @@ def test_default_is_unchanged_when_every_row_is_covered():
                          fine_tuned_source="cached", on_missing="omit")
     assert strict["predictions"] == omitted["predictions"]
     assert omitted["missing_row_ids"] == []
+
+
+# --- provenance must report measurements, not assumptions -------------------
+# cache_hits / live_calls were previously hardcoded to (0, len(rows)) on the live
+# path, so a request served entirely from the response cache still reported a
+# live call per row. The field claimed a spend that had not happened.
+class _CountingClient(_RefusingClient):
+    """A client that answers and counts only the calls that reached a provider."""
+
+    def __init__(self, n_api_calls=0):
+        super().__init__()
+        self.n_api_calls = n_api_calls
+
+    def classify(self, messages_list):
+        # Simulate every response coming from cache: no counter movement.
+        return [{"top_logprobs": {"True": -0.1, "False": -2.0}} for _ in messages_list]
+
+
+def test_a_fully_cached_request_reports_no_live_calls(monkeypatch):
+    monkeypatch.setenv("TOGETHER_API_KEY", "test-key-not-used")
+    monkeypatch.setattr(MT.llm, "make_client", lambda *a, **k: _CountingClient())
+    out = MT.predict(model="zero_shot", points=POINTS, max_live_calls=10)
+    assert out["provenance"]["live_calls"] == 0
+    assert out["provenance"]["cache_hits"] == len(POINTS)
+
+
+def test_live_calls_reflect_the_client_counter(monkeypatch):
+    monkeypatch.setenv("TOGETHER_API_KEY", "test-key-not-used")
+
+    class OneMiss(_CountingClient):
+        def classify(self, messages_list):
+            self.n_api_calls += 1        # one row missed, the rest were cached
+            return [{"top_logprobs": {"True": -0.1, "False": -2.0}}
+                    for _ in messages_list]
+
+    monkeypatch.setattr(MT.llm, "make_client", lambda *a, **k: OneMiss())
+    out = MT.predict(model="zero_shot", points=POINTS, max_live_calls=10)
+    assert out["provenance"]["live_calls"] == 1
+    assert out["provenance"]["cache_hits"] == len(POINTS) - 1
+
+
+def test_a_client_that_does_not_count_reports_null_not_zero(monkeypatch):
+    """None means 'not reported'; 0 would mean 'measured none'."""
+    monkeypatch.setenv("TOGETHER_API_KEY", "test-key-not-used")
+
+    class Uncounted:
+        def classify(self, messages_list):
+            return [{"top_logprobs": {"True": -0.1, "False": -2.0}}
+                    for _ in messages_list]
+
+    monkeypatch.setattr(MT.llm, "make_client", lambda *a, **k: Uncounted())
+    out = MT.predict(model="zero_shot", points=POINTS, max_live_calls=10)
+    assert out["provenance"]["live_calls"] is None
+    assert out["provenance"]["cache_hits"] is None

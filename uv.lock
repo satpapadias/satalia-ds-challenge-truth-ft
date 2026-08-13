@@ -1997,11 +1997,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-a2a = [
-    { name = "a2a-sdk" },
-    { name = "fastapi" },
-    { name = "uvicorn" },
-]
 dev = [
     { name = "pytest" },
 ]
@@ -2013,11 +2008,17 @@ viz = [
     { name = "python-pptx" },
 ]
 
+[package.dev-dependencies]
+agents = [
+    { name = "a2a-sdk" },
+    { name = "fastapi" },
+    { name = "mcp" },
+    { name = "uvicorn" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", marker = "extra == 'a2a'", specifier = ">=1.1.2" },
     { name = "diskcache", specifier = ">=5.6" },
-    { name = "fastapi", marker = "extra == 'a2a'", specifier = ">=0.115" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "numpy", specifier = ">=1.26" },
@@ -2031,9 +2032,16 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "tiktoken", specifier = ">=0.7" },
     { name = "together", specifier = ">=2.0" },
-    { name = "uvicorn", marker = "extra == 'a2a'", specifier = ">=0.30" },
 ]
-provides-extras = ["viz", "dev", "mcp", "a2a"]
+provides-extras = ["viz", "dev", "mcp"]
+
+[package.metadata.requires-dev]
+agents = [
+    { name = "a2a-sdk", specifier = ">=1.1.2" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "mcp", specifier = ">=1.2" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
 
 [[package]]
 name = "types-pyyaml"

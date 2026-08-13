@@ -20,11 +20,23 @@
 
 name: truthclf
 
-x-image: &image
+# Two images. The MCP servers import truthclf and carry the dataset and the
+# data-science stack; the agents carry neither and are built unable to import
+# truthclf at all -- the agent stage fails the build if it can. That is the
+# "agents are pure MCP clients" claim, enforced rather than asserted.
+x-tools-image: &tools-image
   build:
     context: .
     dockerfile: Dockerfile
-  image: truthclf:local
+    target: tools
+  image: truthclf-tools:local
+
+x-agent-image: &agent-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: agent
+  image: truthclf-agent:local
 
 x-agent-env: &agent-env
   # The token an agent requires of its callers, and that the orchestrator
@@ -37,7 +49,7 @@ x-agent-env: &agent-env
 services:
   # --- MCP servers: agent-to-tool ------------------------------------------
   data-tools:
-    <<: *image
+    <<: *tools-image
     container_name: truthclf-data-tools
     command: ["python", "-m", "truthclf_mcp.data_tools", "--host", "0.0.0.0", "--port", "8081"]
     # No provider credential and no network egress: every tool here is local and
@@ -55,7 +67,7 @@ services:
       start_period: 40s            # builds a TF-IDF index over the train split
 
   model-tools:
-    <<: *image
+    <<: *tools-image
     container_name: truthclf-model-tools
     command: ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0", "--port", "8082"]
     environment:
@@ -81,7 +93,7 @@ services:
 
   # --- specialist agents: each wraps one capability as MCP ------------------
   zero-shot-predictor:
-    <<: *image
+    <<: *agent-image
     container_name: truthclf-zero-shot
     command: ["python", "-m", "truthclf_agents.zero_shot", "--host", "0.0.0.0", "--port", "9101"]
     environment:
@@ -104,7 +116,7 @@ services:
       start_period: 20s
 
   fine-tuned-predictor:
-    <<: *image
+    <<: *agent-image
     container_name: truthclf-fine-tuned
     command: ["python", "-m", "truthclf_agents.fine_tuned", "--host", "0.0.0.0", "--port", "9102"]
     environment:
@@ -119,7 +131,7 @@ services:
     healthcheck: *agent-health
 
   explainer:
-    <<: *image
+    <<: *agent-image
     container_name: truthclf-explainer
     command: ["python", "-m", "truthclf_agents.explainer", "--host", "0.0.0.0", "--port", "9103"]
     environment:
@@ -135,7 +147,7 @@ services:
 
   # --- orchestrator: the entry point ---------------------------------------
   orchestrator:
-    <<: *image
+    <<: *agent-image
     container_name: truthclf-orchestrator
     command: ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0", "--port", "9100"]
     environment:

@@ -37,14 +37,28 @@ dev = ["pytest>=7.0"]
 mcp = [
     "mcp>=1.2",
 ]
-a2a = [
+
+# The agents are a separate deployable with a separate dependency set. Declared
+# as a group rather than an extra so it can be installed on its own, WITHOUT the
+# truthclf package and its data-science stack: `uv sync --only-group agents`.
+# That is what lets the agent image be built unable to import truthclf at all,
+# which turns "agents are pure MCP clients" from a convention into a property
+# the build checks.
+[dependency-groups]
+agents = [
     "a2a-sdk>=1.1.2",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "mcp>=1.2",
 ]
 
 [tool.setuptools]
-packages = ["truthclf", "truthclf.predictors", "truthclf_mcp", "truthclf_agents"]
+# truthclf_agents is deliberately NOT part of this distribution. The agents are
+# a separate deployable that must not depend on truthclf, and listing them here
+# would make installing truthclf drag the agent package along -- and would make
+# the tools image fail to build without agent sources it has no reason to carry.
+# They are run from the working directory instead (`python -m truthclf_agents.*`).
+packages = ["truthclf", "truthclf.predictors", "truthclf_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

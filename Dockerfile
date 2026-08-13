@@ -1,23 +1,22 @@
-# One image, six services.
+# Two images from one file.
 #
-# Each service in docker-compose.yml is its own container and its own deployable
-# unit; they differ by command and environment, not by image contents. The A2A
-# boundaries are real process boundaries either way, and a single image means one
-# dependency resolution and one thing to keep reproducible.
+#   target `tools`  -> the MCP servers. Imports truthclf, so it carries the full
+#                      data-science stack, the dataset and the fitted artifacts.
+#   target `agent`  -> the four A2A agents. Speaks A2A and MCP and nothing else.
 #
-# The separations that matter are enforced by configuration rather than by what
-# is on disk:
-#   - only model-tools receives the provider credential
-#   - only the orchestrator receives its peers' addresses, and it is NOT given
-#     the model-tools address, so it cannot bypass the predictor agents
-# If those boundaries ever need to be physical, this file grows per-service
-# stages; nothing else changes.
+# The agents are pure MCP clients: they reach every capability by calling a tool,
+# and none of them imports truthclf. The split makes that structural rather than
+# conventional -- the agent image is built WITHOUT the truthclf package and
+# without the libraries it needs, and the build fails if either turns out to be
+# importable. A future edit that reaches into truthclf from an agent cannot be
+# merged as a passing build.
 
+# ---------------------------------------------------------------------------
 FROM python:3.12-slim AS base
 
-# uv resolves from the committed lockfile, so an image build installs the same
-# versions the results were produced with rather than re-resolving.
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
+# uv resolves from the committed lockfile, so a build installs the versions the
+# results were produced with rather than re-resolving.
+COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /usr/local/bin/uv
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -27,32 +26,65 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
-
-# Dependencies first, so editing source does not invalidate the install layer.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project --extra mcp --extra a2a
 
+# ---------------------------------------------------------------------------
+# The MCP servers. These are the only processes that import truthclf.
+# ---------------------------------------------------------------------------
+FROM base AS tools
+
+RUN uv sync --frozen --no-install-project --extra mcp
 COPY truthclf/ ./truthclf/
 COPY truthclf_mcp/ ./truthclf_mcp/
-COPY truthclf_agents/ ./truthclf_agents/
-RUN uv sync --frozen --extra mcp --extra a2a
+RUN uv sync --frozen --extra mcp
 
-# Data and artifacts. Copied rather than mounted so a container is self-contained
-# and behaves identically wherever it runs.
-#   data.csv               -> data-tools only, but see the note above on images
+# Data and artifacts, copied rather than mounted so a container behaves the same
+# wherever it runs.
+#   data.csv               -> data-tools
 #   ft_eval_cache.json     -> the recorded fine-tuned probabilities
 #   ft_eval_identity.json  -> which statement each of those belongs to; without
 #                             it the stored path refuses to serve at all
 #   results/calibrators/   -> the fitted calibrator artifacts
+#
+# THIS IMAGE CONTAINS THE CHALLENGE DATASET. It must only ever be pushed to a
+# private registry inside the same trust boundary as the data itself.
 COPY data.csv ft_eval_cache.json ft_eval_identity.json ./
 COPY results/calibrators/ ./results/calibrators/
 
-# Run as a non-root user. The response cache is the only thing written at
-# runtime, and it lives under the source tree, so its parent must be writable.
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /app/.llm_cache \
     && chown -R app:app /app
 USER app
+CMD ["python", "-m", "truthclf_mcp.data_tools", "--host", "0.0.0.0", "--port", "8081"]
 
-# Overridden per service in docker-compose.yml.
-CMD ["python", "-m", "truthclf_agents.orchestrator"]
+# ---------------------------------------------------------------------------
+# The agents. No truthclf, no dataset, no data-science stack.
+# ---------------------------------------------------------------------------
+FROM base AS agent
+
+# --only-group installs the agent dependencies alone; --no-install-project keeps
+# the truthclf distribution out entirely. Only truthclf_agents/ is copied, so
+# there is nothing to import even by accident.
+RUN uv sync --frozen --no-install-project --only-group agents
+COPY truthclf_agents/ ./truthclf_agents/
+
+# The assertion the split exists for. `import truthclf` must fail, the
+# data-science stack must be absent, and all four agents must still import.
+# Checked at build time so the property cannot silently regress: an agent that
+# starts reaching into truthclf directly stops producing a buildable image.
+RUN set -eu; \
+    for mod in truthclf truthclf_mcp sklearn scipy pandas statsmodels numpy together tiktoken diskcache; do \
+        if python -c "import $mod" >/dev/null 2>&1; then \
+            echo "BUILD FAILED: the agent image can import '$mod'." >&2; \
+            echo "Agents are pure MCP clients and must reach capabilities only" >&2; \
+            echo "through tool calls. Move the logic behind an MCP tool." >&2; \
+            exit 1; \
+        fi; \
+    done; \
+    python -c "import truthclf_agents.orchestrator, truthclf_agents.zero_shot, \
+               truthclf_agents.fine_tuned, truthclf_agents.explainer"; \
+    echo "verified: no truthclf, no data-science stack, all four agents import"
+
+RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+USER app
+CMD ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0", "--port", "9100"]

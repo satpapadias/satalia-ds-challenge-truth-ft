@@ -436,3 +436,33 @@ through the venv: `.venv/bin/python -m pytest tests/ -q`.
 `data.csv` is the dataset **provided for the challenge**, included here for
 end-to-end reproducibility. Do not push this code or data to any public
 repository.
+
+### The tools image carries the dataset
+
+The build produces two images, and they have different handling requirements:
+
+| image | contains | may be pushed to |
+|---|---|---|
+| `truthclf-tools` | `truthclf`, the data-science stack, **`data.csv`**, the recorded fine-tuned probabilities and their statement-identity map, the fitted calibrators | **a private registry only**, inside the same trust boundary as the data |
+| `truthclf-agent` | the four A2A agents, `a2a-sdk`, `mcp`, and their web stack — no dataset, no model artifacts, no `truthclf` | the same private registry; it carries no challenge data, but there is no reason to publish it either |
+
+`data.csv` is baked into the tools image rather than mounted, so a container
+behaves identically wherever it runs and there is no volume to forget. The cost
+is that **the image is as confidential as the dataset**: it must never reach a
+public registry, and pushing it anywhere outside the project that already holds
+the data is the same disclosure as publishing the CSV.
+
+### The agent image cannot import `truthclf`
+
+This is checked, not asserted. The agent stage installs only the `agents`
+dependency group with `--no-install-project`, copies only `truthclf_agents/`,
+and then **fails the build** if `truthclf`, `truthclf_mcp`, or any of
+`sklearn`, `scipy`, `pandas`, `statsmodels`, `numpy`, `together`, `tiktoken` or
+`diskcache` turns out to be importable. `tests/test_agent_isolation.py` asserts
+the same property from the source on every test run, so the mistake is caught
+when it is made rather than when an image is next built.
+
+The point is not image size, though it is 3.5× smaller. It is that "the agents
+are pure MCP clients" stops being a convention someone has to remember: an agent
+that starts calling into `truthclf` directly — turning a tool call into an
+in-process function call — stops producing a buildable image.
