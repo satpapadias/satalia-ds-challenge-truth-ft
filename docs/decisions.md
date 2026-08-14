@@ -704,3 +704,45 @@ comparison is structurally biased towards agreement.
 **Check when adding any categorical output:** what does this value mean when the
 measurement fails, is that the same as what it means when the measurement
 succeeds, and is the share of the first ever reported?
+
+---
+
+## 2026-08-14 — Peer repository reviewed for GCP conventions (provenance)
+
+**What.** A colleague's solution to the same challenge —
+`x-wppopen-researchlab_truthfulness_agent_tlyras` — was read in full and reviewed.
+
+**Where the review lives.** Deliberately **outside this repository**, alongside
+the other personal working notes, so that this repository stays clean and
+standalone as a deliverable. It reviews someone else's code and has no place in
+ours. This entry is the only record of it here.
+
+**How it was obtained.** Via Elektra, as a reference for this organisation's GCP
+conventions ahead of porting this system to the work environment.
+
+**Why.** Three questions could not be answered from documentation, only from
+something that had actually been deployed against this org's policies: whether
+`iam.allowedPolicyMemberDomains` blocks `allUsers` on Cloud Run here; how a
+Vertex-tuned Gemini model is served and billed; and where Terraform state is
+expected to live. The review answers the first two and establishes that there is
+no convention for the third.
+
+**Scope of use, explicitly.** Reference only. **No architecture, code, prompt,
+or configuration was copied**, and no design decision in this repository was
+changed as a result. The review is read-only and its recommendations are
+confined to GCP mechanics — the gateway registration pattern, per-hop OIDC,
+Cloud Build, and four Vertex API facts — plus one documentation suggestion.
+Every architectural difference identified was deliberately **not** adopted, and
+the reasons are recorded in the review.
+
+**Assessment recorded honestly in both directions.** The review states where
+their solution is stronger than ours — it is deployed and ours is not, its
+fine-tuned model is live and per-token rather than replayed from stored
+probabilities, and its per-hop OIDC auth posture is better than what we had
+planned — as well as where ours is better supported by evidence.
+
+**One caveat carried forward.** That repository does not use logprobs anywhere,
+so it does **not** establish whether Vertex exposes first-token logprobs on a
+tuned model. Our calibration, ECE, Brier and threshold tuning all depend on a
+continuous probability, so that question remains open and must be settled before
+committing to a tuning run on the new platform.
