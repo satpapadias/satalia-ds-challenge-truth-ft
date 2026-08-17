@@ -15,6 +15,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from .common import log_event, outbound_headers, timed
+from .gcp_auth import GcpAuth
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,11 @@ async def call_tool(server_url: str, tool: str, arguments: dict,
     tool call appears under the same trace as the A2A hop that caused it.
     """
     headers = outbound_headers()
+    auth = GcpAuth()
     try:
-        async with httpx2.AsyncClient(headers=headers, timeout=timeout) as http_client:
+        async with httpx2.AsyncClient(
+            headers=headers, auth=auth, timeout=timeout
+        ) as http_client:
             async with streamable_http_client(server_url, http_client=http_client) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -93,7 +97,9 @@ def _unwrap(tool: str, result) -> Any:
 
 async def probe(server_url: str) -> list[str]:
     """Tool names exposed by a server. Used as a start-up reachability check."""
-    async with httpx2.AsyncClient(timeout=30.0) as http_client:
+    async with httpx2.AsyncClient(
+        auth=GcpAuth(), timeout=30.0
+    ) as http_client:
         async with streamable_http_client(server_url, http_client=http_client) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()

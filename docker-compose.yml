@@ -39,10 +39,6 @@ x-agent-image: &agent-image
   image: truthclf-agent:local
 
 x-agent-env: &agent-env
-  # The token an agent requires of its callers, and that the orchestrator
-  # presents to its peers. Distinct from the public token below, so a leaked
-  # public token cannot drive the specialists directly.
-  AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
   HOST: 0.0.0.0
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
 
@@ -71,8 +67,6 @@ services:
     container_name: truthclf-model-tools
     command: ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0", "--port", "8082"]
     environment:
-      # The only service that holds the provider credential.
-      TOGETHER_API_KEY: ${TOGETHER_API_KEY:?set TOGETHER_API_KEY in .env}
       TRUTHCLF_FT_CACHE: /app/ft_eval_cache.json
       TRUTHCLF_FT_IDENTITY: /app/ft_eval_identity.json
       TRUTHCLF_CALIBRATOR_DIR: /app/results/calibrators

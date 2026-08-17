@@ -346,22 +346,22 @@ def main() -> None:
     args = ap.parse_args()
 
     configure_logging(AGENT_NAME)
-    # Two tokens: the public one the caller presents, and the one this agent
-    # presents to its peers, so a leaked public token cannot drive them directly.
-    auth = BearerAuth("ORCHESTRATOR_TOKEN")
-    agent_token = os.environ.get("AGENT_TOKEN", "")
-    if not agent_token:
-        raise RuntimeError("AGENT_TOKEN is not set; the orchestrator cannot "
-                           "authenticate to its peer agents")
+    # The public token for the /verify endpoint. In GCP, this is checked by the
+    # A2A Gateway and the app checks it again as defense-in-depth.
+    # Agent-to-agent calls will be authenticated by per-hop OIDC ID tokens
+    # validated by Cloud Run's IAM layer, so no app-level token is needed there.
+    public_auth = BearerAuth("ORCHESTRATOR_TOKEN")
 
     async def startup():
         # Capability discovery, once. A peer that cannot be reached now is
         # reported at boot rather than on the first request that needs it.
+        # In GCP, peers.discover will use the GCP metadata service to mint
+        # ID tokens for each peer URL. In local dev, it will skip auth.
         for key, url in (("zero_shot", ZERO_SHOT_URL),
                          ("fine_tuned", FINE_TUNED_URL),
                          ("explainer", EXPLAINER_URL)):
             try:
-                PEERS[key] = await peers.discover(key, url, agent_token)
+                PEERS[key] = await peers.discover(key, url)
             except Exception as e:
                 log_event(logger, "peer discovery failed", peer=key, url=url,
                           error=type(e).__name__, detail=str(e)[:300])
@@ -370,8 +370,8 @@ def main() -> None:
 
     app = build_app(
         agent_name=AGENT_NAME, executor=OrchestratorExecutor(),
-        card_builder=orchestrator_card, auth=auth,
-        extra_routes=[Route("/verify", verify_route(auth), methods=["POST"])],
+        card_builder=orchestrator_card, auth=None,
+        extra_routes=[Route("/verify", verify_route(public_auth), methods=["POST"])],
         on_startup=startup)
     run(app, args.host, args.port, AGENT_NAME)
 

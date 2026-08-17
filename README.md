@@ -7,9 +7,9 @@ provides the three required components behind one consistent interface:
 2. **Fine-tuned predictor** — `fine_tune(training_dataset)` + `predict(points, labels=None)` (interchangeable with the zero-shot one)
 3. **Explainer** — `explain(model, points, labels=None)`
 
-Every component processes a **set** of points and returns evaluation metrics when
-labels are supplied. The serving backend is **Together AI** (serverless inference
-and LoRA fine-tuning).
+Every component processes a **set** of points and returns evaluation metrics
+when labels are supplied. The serving backend is **Vertex AI** (Gemini models,
+serverless inference, and supervised fine-tuning).
 
 ---
 
@@ -322,11 +322,10 @@ results files. Ties can still collapse quantile edges, which is why the realised
 bin count is always reported alongside: a 2-bin and a 10-bin ECE are not
 comparable quantities.
 
-**Fine-tuning.** LoRA supervised fine-tuning on Together (`gpt-4o-mini`/OpenAI was
-not viable — deprecated and fine-tuning closed to new users). Serverless serving of
-*custom* LoRA adapters was not available for our base, so the fine-tuned model is
-served on a **short-lived dedicated endpoint** purely for evaluation (created,
-queried, and deleted within minutes). **DPO is deliberately excluded**: a
+**Fine-tuning.** Supervised fine-tuning on Vertex AI (`gemini-2.5-flash`).
+A tuned Gemini model is served **per-token**, invoked through the ordinary
+`generate_content(model=<endpoint>)` path. There is no dedicated endpoint to
+provision or tear down. **DPO is deliberately excluded**: a
 single-label binary task has no preferred/dispreferred ranking, so DPO degenerates
 to what SFT already does.
 

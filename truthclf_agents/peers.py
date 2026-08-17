@@ -20,6 +20,7 @@ from a2a.types import (Message, Part, Role, SendMessageRequest, TaskState)
 from google.protobuf import json_format, struct_pb2
 
 from .common import log_event, outbound_headers, timed
+from .gcp_auth import GcpAuth
 
 logger = logging.getLogger(__name__)
 
@@ -147,26 +148,28 @@ def _read_parts(message) -> tuple[dict, str]:
     return data, text
 
 
-async def discover(name: str, base_url: str, token: str,
-                   timeout: float = 300.0) -> Peer:
+async def discover(name: str, base_url: str, timeout: float = 300.0) -> Peer:
     """Fetch a peer's card and build a client from it.
 
     The card decides the transport: the SDK streams only when both this client
     and the peer's advertised capability allow it, so an agent that declares
     itself non-streaming is called with a plain send even when streaming was
     requested. That makes the card the single place the choice is expressed.
+
+    Authentication is per-hop OIDC for Cloud Run URLs, and none for localhost,
+    handled by the GcpAuth flow.
     """
 
     async def inject_trace(request):
-        # Set at send time rather than as client defaults: one client is shared
-        # across requests, and each needs its own span.
+        # Set at send time: one client is shared, but each request needs its own span.
         for key, value in outbound_headers().items():
             request.headers[key] = value
 
     http = httpx2.AsyncClient(
         timeout=timeout,
-        headers={"Authorization": f"Bearer {token}"},
-        event_hooks={"request": [inject_trace]})
+        auth=GcpAuth(),
+        event_hooks={"request": [inject_trace]},
+    )
 
     card = await A2ACardResolver(http, base_url).get_agent_card()
     client = ClientFactory(ClientConfig(streaming=True, httpx_client=http)).create(card)

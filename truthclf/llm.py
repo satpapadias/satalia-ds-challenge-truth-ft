@@ -1,10 +1,13 @@
-"""LLM utilities for Together AI: token/cost estimation, response caching, and a
-thin OpenAI-compatible client with retry/backoff.
+"""LLM utilities for provider backends: token/cost estimation, response
+caching, and thin clients with retry/backoff.
 
-No network call happens on import. The Together SDK is imported lazily and picks
-up TOGETHER_API_KEY from the environment (loaded from .env by the package init).
-Token counting uses tiktoken as an approximation; the Llama/GPT-OSS tokenizers
-differ slightly, so cost figures are estimates (accurate to within a few %).
+The default backend is Vertex AI (Gemini). The Together AI backend is retained
+for offline replay of the historical record.
+
+No network call happens on import. SDKs are imported lazily and pick up their
+credentials from the environment (e.g. gcloud ADC, or TOGETHER_API_KEY). Token
+counting uses tiktoken as an approximation; tokenizers differ, so cost figures
+are estimates.
 """
 
 from __future__ import annotations
@@ -21,12 +24,14 @@ from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                       wait_exponential_jitter)
 
 # USD per 1,000,000 tokens. Verified 2026-06-22 from together.ai pricing.
+# Vertex pricing verified 2026-08-14.
 PRICING = {
     "meta-llama/Llama-3.3-70B-Instruct-Turbo":         {"input": 1.04, "output": 1.04},
     "openai/gpt-oss-20b":                              {"input": 0.05, "output": 0.20},
     "openai/gpt-oss-120b":                             {"input": 0.15, "output": 0.60},
     "Qwen/Qwen3.5-9B":                                {"input": 0.17, "output": 0.25},
     "google/gemma-4-31B-it":                           {"input": 0.39, "output": 0.97},
+    "gemini-2.5-flash":                                {"input": 0.35, "output": 0.70},
 }
 
 # Per-model client settings. Reasoning models need either a low reasoning effort
@@ -38,6 +43,7 @@ MODEL_CONFIGS = {
     "openai/gpt-oss-120b":  {"max_output_tokens": 512, "reasoning_effort": "low"},
     "Qwen/Qwen3.5-9B":      {"max_output_tokens": 16, "extra_create_kwargs": _NO_THINK},
     "google/gemma-4-31B-it": {"max_output_tokens": 16, "extra_create_kwargs": _NO_THINK},
+    "gemini-2.5-flash":     {"max_output_tokens": 16},
 }
 DEFAULT_CONFIG = {"max_output_tokens": 16}
 
@@ -60,18 +66,21 @@ def _retryable_errors():
 RETRYABLE_ERRORS = _retryable_errors()
 
 
-def make_client(model: str, cache=None, backend: str = "sync", **overrides):
+def make_client(model: str, cache=None, backend: str = "vertex", **overrides):
     """Build a client for `model` using its registered config (or the default).
 
-    backend="sync"  -> TogetherClient (concurrent over a set, cached) for
-                       dev/notebook/interactive use
-    backend="batch" -> TogetherBatchClient (Together Batch API) for full-test runs
+    backend="vertex" -> VertexClient (concurrent over a set, cached)
+    backend="sync"   -> TogetherClient (concurrent, cached) for dev/interactive
+    backend="batch"  -> TogetherBatchClient (Batch API) for full-test runs
 
-    Both share the same cache and cache keys, so results carry over between them.
+    The cache keys embed the backend, so responses from different providers
+    cannot collide.
     Fine-tuned model ids fall back to the default config, so the same call site
     works for base and fine-tuned models."""
     cfg = dict(MODEL_CONFIGS.get(model, DEFAULT_CONFIG))
     cfg.update(overrides)
+    if backend == "vertex":
+        return VertexClient(model, cache=cache, **cfg)
     if backend == "batch":
         return TogetherBatchClient(model, cache=cache, **cfg)
     if backend == "sync":
@@ -105,7 +114,11 @@ except Exception as _tiktoken_error:             # noqa: F841 - reported below
 
 def estimate_cost(n_input_tokens: int, n_output_tokens: int, model: str) -> float:
     """Estimated USD cost for input/output token counts at a model's rate."""
-    price = PRICING[model]
+    # A fine-tuned model id (e.g. from a Vertex endpoint string) is not in the
+    # pricing table; fall back to the known base model.
+    price = PRICING.get(model)
+    if price is None and "gemini" in model:
+        price = PRICING["gemini-2.5-flash"]
     return (n_input_tokens * price["input"] + n_output_tokens * price["output"]) / 1_000_000
 
 
@@ -129,11 +142,11 @@ class ResponseCache:
     The key binds: schema version, serving backend, call kind, model id, the full
     message list, and the request params. Two properties matter:
 
-    * **Backend is part of the key.** The sync serverless API and the Batch API
-      are different serving paths that can return different completions for the
-      same prompt. Schema 1 deliberately shared keys between them, so whichever
-      ran last silently overwrote the other's value and the recorded numbers
-      depended on run order. They are now separate namespaces.
+    * **Backend is part of the key.** Together, Vertex, and the Together Batch
+      API are different serving paths that can return different completions for
+      the same prompt. Schema 1 deliberately shared keys between them, so
+      whichever ran last silently overwrote the other's value and the recorded
+      numbers depended on run order. They are now separate namespaces.
     * **Values are raw.** Nothing is parsed before storage — a cached score is
       the model's text, a cached classification is the API's logprobs structure.
       Parsing happens on read, so changing a parser can never leave stale
@@ -216,11 +229,15 @@ def legacy_v1_key(model: str, messages: list[dict], **params) -> str:
 
 def _sdk_version() -> str:
     """Version string recorded in each cache envelope, for provenance."""
+    versions = []
     try:
         import importlib.metadata as md
-        return f"together {md.version('together')}"
-    except Exception as e:                        # provenance only; never fatal
-        return f"unknown ({type(e).__name__})"
+        for pkg in ("together", "google-generativeai", "vertexai"):
+            try:
+                versions.append(f"{pkg} {md.version(pkg)}")
+            except md.PackageNotFoundError:
+                pass
+    finally: return ", ".join(versions) or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +417,148 @@ class TogetherClient:
         return resp.choices[0].message.content or ""
 
 
+class VertexClient:
+    """LLM client for Vertex AI (Gemini)."""
+
+    def __init__(self, model: str, cache: ResponseCache | None = None,
+                 max_output_tokens: int = 8, temperature: float = 0.0,
+                 max_retries: int = 4, backoff_base: float = 1.0, timeout: float = 120.0,
+                 max_workers: int = 16):
+        self.model = model
+        self.max_workers = max(1, int(max_workers))
+        self.cache = ResponseCache() if cache is None else cache
+        self.max_output_tokens = max_output_tokens
+        self.temperature = temperature
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
+        self.timeout = timeout
+        self.api_errors = 0
+        self.n_api_calls = 0
+        self.total_api_seconds = 0.0
+        self._client = None
+
+    @property
+    def avg_latency(self) -> float:
+        return self.total_api_seconds / self.n_api_calls if self.n_api_calls else 0.0
+
+    def _params_key(self) -> dict:
+        return {"temperature": self.temperature}
+
+    def _ensure_client(self):
+        if self._client is None:
+            try:
+                import vertexai
+                from vertexai.generative_models import GenerativeModel
+            except ImportError as e:
+                raise RuntimeError(
+                    "google-cloud-aiplatform not installed; run `pip install "
+                    "google-cloud-aiplatform` and `gcloud auth application-default login`."
+                ) from e
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+            location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+            if not project or not location:
+                raise RuntimeError(
+                    "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for Vertex AI.")
+            vertexai.init(project=project, location=location)
+            self._client = GenerativeModel(self.model)
+        return self._client
+
+    def _generate(self, contents, **generation_config):
+        client = self._ensure_client()
+
+        def _count_error(retry_state):
+            self.api_errors += 1
+
+        # google-genai has its own tenacity-based retry config.
+        @retry(retry=retry_if_exception_type(RETRYABLE_ERRORS),
+               wait=wait_exponential_jitter(initial=self.backoff_base, max=60.0),
+               stop=stop_after_attempt(self.max_retries),
+               before_sleep=_count_error,
+               reraise=True)
+        def _call():
+            t = time.time()
+            # The SDK's own timeout is passed at method level, not client level.
+            resp = client.generate_content(
+                contents, generation_config=generation_config, request_options={"timeout": self.timeout})
+            self.total_api_seconds += time.time() - t
+            self.n_api_calls += 1
+            return resp
+
+        return _call()
+
+    BACKEND = "vertex"
+
+    def _map(self, fn, items: list):
+        if self.max_workers == 1 or len(items) <= 1:
+            return [fn(x) for x in items]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            return list(ex.map(fn, items))
+
+    def _cache_key(self, messages: list[dict], call: str, **params) -> str:
+        return self.cache.key(self.model, messages, backend=self.BACKEND, call=call,
+                              **params, **self._params_key())
+
+    def _contents(self, messages: list[dict]) -> list[dict]:
+        """OpenAI message format -> Vertex contents format."""
+        contents = []
+        for m in messages:
+            role = m["role"]
+            if role == "assistant":
+                role = "model"
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        return contents
+
+    def score_one(self, messages: list[dict]) -> str:
+        k = self._cache_key(messages, "score", max_tokens=self.max_output_tokens)
+        cached = self.cache.get(k)
+        if cached is not None:
+            return cached
+        resp = self._generate(self._contents(messages),
+                              max_output_tokens=self.max_output_tokens,
+                              temperature=self.temperature)
+        text = resp.text
+        self.cache.set(k, text, backend=self.BACKEND, call="score", model=self.model)
+        return text
+
+    def score(self, messages_list: list[list[dict]]) -> list[str]:
+        out = self._map(self.score_one, messages_list)
+        self.cache.flush()
+        return out
+
+    def complete_one(self, messages: list[dict], max_tokens: int = 64) -> str:
+        k = self._cache_key(messages, "complete", max_tokens=max_tokens)
+        cached = self.cache.get(k)
+        if cached is not None:
+            return cached
+        resp = self._generate(self._contents(messages),
+                              max_output_tokens=max_tokens,
+                              temperature=self.temperature)
+        text = resp.text
+        self.cache.set(k, text, backend=self.BACKEND, call="complete", model=self.model)
+        return text
+
+    def complete(self, messages_list: list[list[dict]], max_tokens: int = 64) -> list[str]:
+        out = self._map(lambda m: self.complete_one(m, max_tokens), messages_list)
+        self.cache.flush()
+        return out
+
+    def classify_one(self, messages: list[dict], top_logprobs: int = 10) -> dict:
+        k = self._cache_key(messages, "classify", max_tokens=1, logprobs=top_logprobs)
+        cached = self.cache.get(k)
+        if cached is None:
+            resp = self._generate(self._contents(messages), max_output_tokens=1,
+                                  temperature=self.temperature, top_k=top_logprobs)
+            cached = json.dumps(_raw_logprobs_payload(resp.candidates[0]), ensure_ascii=False)
+            self.cache.set(k, cached, backend=self.BACKEND, call="classify", model=self.model)
+        return _parse_logprobs_payload(cached)
+
+    def classify(self, messages_list: list[list[dict]]) -> list[dict]:
+        out = self._map(self.classify_one, messages_list)
+        self.cache.flush()
+        return out
+
+
 class ResponseShapeError(ValueError):
     """A model response did not have the structure the extraction code expects.
 
@@ -410,10 +569,11 @@ class ResponseShapeError(ValueError):
 
 
 def _lp_content_to_top(first: dict) -> dict:
-    """Given a single logprobs.content[*] entry (dict), return {token: logprob}
+    """Given a single logprobs.content[*] or candidate.token_log_probs[*]
+    entry (dict), return {token: logprob}
     including the chosen token."""
-    top = {t["token"]: t["logprob"] for t in first.get("top_logprobs", [])}
-    top.setdefault(first["token"], first["logprob"])
+    top = {t["token"]: t.get("log_prob") or t.get("logprob") for t in first.get("top_logprobs", [])}
+    top.setdefault(first["token"], first.get("log_prob") or first.get("logprob"))
     return top
 
 
@@ -430,17 +590,23 @@ def _as_dict(obj):
 
 def _raw_logprobs_payload(choice) -> dict:
     """The RAW logprobs structure for one sync chat choice, stored verbatim.
+    Handles both Together's `choice.logprobs.content` and Vertex's
+    `candidate.token_log_probs`.
 
-    No flattening happens here — that is `_lp_content_to_top`'s job, and it runs
-    on read so the cached value never depends on the parser's current shape.
+    No flattening happens here — that is `_lp_content_to_top`'s job, and it
+    runs on read so the cached value never depends on the parser's current
+    shape.
     """
-    lp = _as_dict(choice.logprobs)
-    if lp is None:
-        raise ResponseShapeError("response carried no logprobs (was logprobs=True sent?)")
-    content = lp.get("content")
-    if not content:
-        raise ResponseShapeError("logprobs.content was empty")
-    return {"text": choice.message.content or "", "content0": _as_dict(content[0])}
+    if hasattr(choice, "logprobs") and choice.logprobs:
+        lp = _as_dict(choice.logprobs)
+        content = lp.get("content")
+        if not content: raise ResponseShapeError("logprobs.content was empty")
+        return {"text": choice.message.content or "", "content0": _as_dict(content[0])}
+    if hasattr(choice, "token_log_probs") and choice.token_log_probs:
+        content = _as_dict(choice.token_log_probs)
+        if not content: raise ResponseShapeError("token_log_probs was empty")
+        return {"text": choice.content.parts[0].text or "", "content0": _as_dict(content[0])}
+    raise ResponseShapeError("response carried no usable logprobs")
 
 
 def _parse_logprobs_payload(raw: str) -> dict:

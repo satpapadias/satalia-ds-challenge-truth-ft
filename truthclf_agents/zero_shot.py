@@ -62,14 +62,13 @@ def main() -> None:
     args = ap.parse_args()
 
     configure_logging(AGENT_NAME)
-    auth = BearerAuth("AGENT_TOKEN")
 
     async def startup():
         tools = await mcp_client.probe(MODEL_TOOLS_URL)
         log_event(logger, "connected to model-tools", url=MODEL_TOOLS_URL, tools=tools)
 
     app = build_app(agent_name=AGENT_NAME, executor=ZeroShotExecutor(),
-                    card_builder=zero_shot_card, auth=auth, on_startup=startup)
+                    card_builder=zero_shot_card, auth=None, on_startup=startup)
     run(app, args.host, args.port, AGENT_NAME)
 
 

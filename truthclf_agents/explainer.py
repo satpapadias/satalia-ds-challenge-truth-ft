@@ -35,9 +35,9 @@ class ExplainerExecutor(JsonAgentExecutor):
     async def handle(self, payload: dict, context: RequestContext) -> tuple[dict, str]:
         points = payload.get("points") or []
         arguments = {
-            # Defaulted here rather than required, because the fine-tuned model
-            # cannot answer occlusion queries today. Passing it through still
-            # lets a caller ask, and get the specific reason it cannot be done.
+            # Defaulted to zero_shot, but fine_tuned is now a valid option as
+            # it can be served live. A caller can explicitly request
+            # "model": "fine_tuned" to explain it.
             "model": payload.get("model", "zero_shot"),
             "points": points,
             "with_rationale": payload.get("with_rationale", True),
@@ -76,14 +76,13 @@ def main() -> None:
     args = ap.parse_args()
 
     configure_logging(AGENT_NAME)
-    auth = BearerAuth("AGENT_TOKEN")
 
     async def startup():
         tools = await mcp_client.probe(MODEL_TOOLS_URL)
         log_event(logger, "connected to model-tools", url=MODEL_TOOLS_URL, tools=tools)
 
     app = build_app(agent_name=AGENT_NAME, executor=ExplainerExecutor(),
-                    card_builder=explainer_card, auth=auth, on_startup=startup)
+                    card_builder=explainer_card, auth=None, on_startup=startup)
     run(app, args.host, args.port, AGENT_NAME)
 
 

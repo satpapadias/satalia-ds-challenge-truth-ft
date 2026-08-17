@@ -1,29 +1,18 @@
-# --- Local-only / excluded from submission ---
-notebooks/
-.ipynb_checkpoints/
-# .claude/ is machine-local session state
-.claude/
-contradictions.txt
-# CLAUDE.md is TRACKED: it is the standing brief and must survive a clone.
+# Python virtual environment
+.venv/
 
-# --- LLM response cache ---
-# .llm_cache/ is the schema-2 diskcache (SQLite, ~15 MB, machine-local).
-# .llm_cache.json is the schema-1 archive and stays TRACKED: it is the record of
-# what was actually spent, and scripts/migrate_cache.py replays from it.
-.llm_cache/
-
-# --- Python ---
+# Python caches
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
 
-# --- Env / editor ---
-.venv/
-venv/
-.env
-.DS_Store
-.vscode/
+# Project-specific caches and build artifacts
+.llm_cache/
+dist/
 
-# --- Archives / data (do not redistribute) ---
+# Terraform working directory and state files
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Downloaded archives
 *.zip
