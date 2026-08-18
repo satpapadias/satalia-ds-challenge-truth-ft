@@ -98,6 +98,12 @@ resource "google_secret_manager_secret_version" "orchestrator_token_version" {
   secret_data = var.orchestrator_token
 }
 
+resource "google_secret_manager_secret_iam_member" "orchestrator_token_accessor" {
+  secret_id = google_secret_manager_secret.orchestrator_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.service_accounts["orchestrator"].email}"
+}
+
 # --- Cloud Run services: one per container ---
 
 locals {
@@ -120,13 +126,13 @@ resource "google_cloud_run_v2_service" "tool_services" {
   for_each   = {
     "data-tools" = {
       image   = local.tools_image
-      port    = 8081
-      command = ["python", "-m", "truthclf_mcp.data_tools", "--host", "0.0.0.0", "--port", "8081"]
+      port    = 8080
+      command = ["python", "-m", "truthclf_mcp.data_tools", "--host", "0.0.0.0"]
     },
     "model-tools" = {
       image   = local.tools_image
-      port    = 8082
-      command = ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0", "--port", "8082"]
+      port    = 8080
+      command = ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0"]
     }
   }
   name     = "truthclf-${each.key}"
@@ -166,24 +172,24 @@ resource "google_cloud_run_v2_service" "specialist_agents" {
   for_each   = {
     "zero-shot-predictor" = {
       image   = local.agent_image
-      port    = 9101
-      command = ["python", "-m", "truthclf_agents.zero_shot", "--host", "0.0.0.0", "--port", "9101"]
+      port    = 8080
+      command = ["python", "-m", "truthclf_agents.zero_shot", "--host", "0.0.0.0"]
       env = {
         MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
       },
     },
     "fine-tuned-predictor" = {
       image   = local.agent_image
-      port    = 9102
-      command = ["python", "-m", "truthclf_agents.fine_tuned", "--host", "0.0.0.0", "--port", "9102"]
+      port    = 8080
+      command = ["python", "-m", "truthclf_agents.fine_tuned", "--host", "0.0.0.0"]
       env = {
         MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
       },
     },
     "explainer" = {
       image   = local.agent_image
-      port    = 9103
-      command = ["python", "-m", "truthclf_agents.explainer", "--host", "0.0.0.0", "--port", "9103"]
+      port    = 8080
+      command = ["python", "-m", "truthclf_agents.explainer", "--host", "0.0.0.0"]
       env = {
         MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
       },
@@ -226,18 +232,18 @@ resource "google_cloud_run_v2_service" "orchestrator" {
   depends_on = [google_cloud_run_v2_service.specialist_agents]
   name       = "truthclf-orchestrator"
   location   = var.region
-  ingress    = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  ingress    = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
   template {
     service_account = google_service_account.service_accounts["orchestrator"].email
     containers {
       image   = local.agent_image
-      command = ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0", "--port", "9100"]
-      ports { container_port = 9100 }
+      command = ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0"]
+      ports { container_port = 8080 }
       startup_probe {
         tcp_socket {
-          port = 9100
+          port = 8080
         }
         initial_delay_seconds = 10
         timeout_seconds       = 5

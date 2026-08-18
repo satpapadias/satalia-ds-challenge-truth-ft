@@ -14,6 +14,7 @@ Run:  python -m truthclf_agents.fine_tuned [--host H] [--port P]
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 
@@ -91,15 +92,27 @@ def _classify(message: str) -> str | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=AGENT_NAME)
-    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    ap.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 9102)))
     args = ap.parse_args()
 
     configure_logging(AGENT_NAME)
 
     async def startup():
-        tools = await mcp_client.probe(MODEL_TOOLS_URL)
-        log_event(logger, "connected to model-tools", url=MODEL_TOOLS_URL, tools=tools)
+        async def probe_loop():
+            delay = 1.0
+            while True:
+                try:
+                    tools = await mcp_client.probe(MODEL_TOOLS_URL)
+                    log_event(logger, "connected to model-tools", url=MODEL_TOOLS_URL, tools=tools)
+                    break
+                except Exception as e:
+                    log_event(logger, "model-tools probe failed, retrying...", url=MODEL_TOOLS_URL,
+                              error=type(e).__name__, detail=str(e)[:150])
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+
+        asyncio.create_task(probe_loop())
 
     app = build_app(agent_name=AGENT_NAME, executor=FineTunedExecutor(),
                     card_builder=fine_tuned_card, auth=None, on_startup=startup)

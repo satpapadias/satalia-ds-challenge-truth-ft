@@ -20,6 +20,8 @@ import os
 import time
 import warnings
 
+import numpy as np
+
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                       wait_exponential_jitter)
 
@@ -57,8 +59,10 @@ def _retryable_errors():
     """
     try:
         from together import error as te
+        from google.api_core import exceptions as ge
         return (te.APIConnectionError, te.APITimeoutError, te.RateLimitError,
-                te.Timeout, te.ResponseError)
+                te.Timeout, te.ResponseError,
+                ge.ResourceExhausted, ge.ServiceUnavailable, ge.InternalServerError, ge.GatewayTimeout)
     except ImportError:                          # SDK absent: nothing to import
         return (ConnectionError, TimeoutError)
 
@@ -114,11 +118,14 @@ except Exception as _tiktoken_error:             # noqa: F841 - reported below
 
 def estimate_cost(n_input_tokens: int, n_output_tokens: int, model: str) -> float:
     """Estimated USD cost for input/output token counts at a model's rate."""
-    # A fine-tuned model id (e.g. from a Vertex endpoint string) is not in the
-    # pricing table; fall back to the known base model.
     price = PRICING.get(model)
-    if price is None and "gemini" in model:
-        price = PRICING["gemini-2.5-flash"]
+    if price is None:
+        if "gemini" in model:
+            price = PRICING["gemini-2.5-flash"]
+        elif "gemma-4-31B-it" in model:
+            price = PRICING["google/gemma-4-31B-it"]
+        else:
+            price = {"input": 0.0, "output": 0.0}
     return (n_input_tokens * price["input"] + n_output_tokens * price["output"]) / 1_000_000
 
 
@@ -232,7 +239,7 @@ def _sdk_version() -> str:
     versions = []
     try:
         import importlib.metadata as md
-        for pkg in ("together", "google-generativeai", "vertexai"):
+        for pkg in ("together", "google-cloud-aiplatform"):
             try:
                 versions.append(f"{pkg} {md.version(pkg)}")
             except md.PackageNotFoundError:
@@ -423,7 +430,7 @@ class VertexClient:
     def __init__(self, model: str, cache: ResponseCache | None = None,
                  max_output_tokens: int = 8, temperature: float = 0.0,
                  max_retries: int = 4, backoff_base: float = 1.0, timeout: float = 120.0,
-                 max_workers: int = 16):
+                 max_workers: int = 16, **kwargs):
         self.model = model
         self.max_workers = max(1, int(max_workers))
         self.cache = ResponseCache() if cache is None else cache
@@ -451,8 +458,7 @@ class VertexClient:
                 from vertexai.generative_models import GenerativeModel
             except ImportError as e:
                 raise RuntimeError(
-                    "google-cloud-aiplatform not installed; run `pip install "
-                    "google-cloud-aiplatform` and `gcloud auth application-default login`."
+                    "google-cloud-aiplatform not installed; run `uv pip install google-cloud-aiplatform`."
                 ) from e
             project = os.environ.get("GOOGLE_CLOUD_PROJECT")
             location = os.environ.get("GOOGLE_CLOUD_LOCATION")
@@ -463,13 +469,14 @@ class VertexClient:
             self._client = GenerativeModel(self.model)
         return self._client
 
-    def _generate(self, contents, **generation_config):
-        client = self._ensure_client()
+    def _generate(self, contents: list[dict] | dict, generation_config: dict, system_instruction: str | None = None):
+        from vertexai.generative_models import GenerativeModel
+        self._ensure_client()
+        model = GenerativeModel(self.model, system_instruction=system_instruction)
 
         def _count_error(retry_state):
             self.api_errors += 1
 
-        # google-genai has its own tenacity-based retry config.
         @retry(retry=retry_if_exception_type(RETRYABLE_ERRORS),
                wait=wait_exponential_jitter(initial=self.backoff_base, max=60.0),
                stop=stop_after_attempt(self.max_retries),
@@ -477,9 +484,10 @@ class VertexClient:
                reraise=True)
         def _call():
             t = time.time()
-            # The SDK's own timeout is passed at method level, not client level.
-            resp = client.generate_content(
-                contents, generation_config=generation_config, request_options={"timeout": self.timeout})
+            resp = model.generate_content(
+                contents,
+                generation_config=generation_config,
+            )
             self.total_api_seconds += time.time() - t
             self.n_api_calls += 1
             return resp
@@ -499,24 +507,31 @@ class VertexClient:
         return self.cache.key(self.model, messages, backend=self.BACKEND, call=call,
                               **params, **self._params_key())
 
-    def _contents(self, messages: list[dict]) -> list[dict]:
-        """OpenAI message format -> Vertex contents format."""
+    def _contents(self, messages: list[dict]) -> tuple[str | None, list[dict]]:
+        """OpenAI message format -> Vertex contents format.
+        
+        Separates the system prompt for the new API format.
+        """
+        system_instruction = None
         contents = []
         for m in messages:
             role = m["role"]
+            if role == "system":
+                system_instruction = m["content"]
+                continue
             if role == "assistant":
                 role = "model"
             contents.append({"role": role, "parts": [{"text": m["content"]}]})
-        return contents
+        return system_instruction, contents
 
     def score_one(self, messages: list[dict]) -> str:
         k = self._cache_key(messages, "score", max_tokens=self.max_output_tokens)
         cached = self.cache.get(k)
         if cached is not None:
             return cached
-        resp = self._generate(self._contents(messages),
-                              max_output_tokens=self.max_output_tokens,
-                              temperature=self.temperature)
+        generation_config = {"temperature": self.temperature, "max_output_tokens": self.max_output_tokens, "thinking_config": {"thinking_budget": 0}}
+        system_instruction, contents = self._contents(messages)
+        resp = self._generate(contents, generation_config, system_instruction)
         text = resp.text
         self.cache.set(k, text, backend=self.BACKEND, call="score", model=self.model)
         return text
@@ -531,9 +546,14 @@ class VertexClient:
         cached = self.cache.get(k)
         if cached is not None:
             return cached
-        resp = self._generate(self._contents(messages),
-                              max_output_tokens=max_tokens,
-                              temperature=self.temperature)
+
+        generation_config = {
+            "temperature": self.temperature,
+            "max_output_tokens": max_tokens,
+            "thinking_config": {"thinking_budget": 0},
+        }
+        system_instruction, contents = self._contents(messages)
+        resp = self._generate(contents, generation_config, system_instruction)
         text = resp.text
         self.cache.set(k, text, backend=self.BACKEND, call="complete", model=self.model)
         return text
@@ -543,15 +563,66 @@ class VertexClient:
         self.cache.flush()
         return out
 
-    def classify_one(self, messages: list[dict], top_logprobs: int = 10) -> dict:
-        k = self._cache_key(messages, "classify", max_tokens=1, logprobs=top_logprobs)
+    def classify_one(self, messages: list[dict]) -> dict:
+        generation_config = {
+            "temperature": 0,
+            "max_output_tokens": 1,
+            "top_k": 5,
+            "response_logprobs": True,
+            "logprobs": 5,
+            "thinking_config": {"thinking_budget": 0}
+        }
+
+        # The cache key includes the backend, call type, model, and all params,
+        # so this request is uniquely identified.
+        cache_params = generation_config.copy()
+        cache_params.pop("temperature", None)
+        k = self._cache_key(messages, "classify", **cache_params)
         cached = self.cache.get(k)
-        if cached is None:
-            resp = self._generate(self._contents(messages), max_output_tokens=1,
-                                  temperature=self.temperature, top_k=top_logprobs)
-            cached = json.dumps(_raw_logprobs_payload(resp.candidates[0]), ensure_ascii=False)
-            self.cache.set(k, cached, backend=self.BACKEND, call="classify", model=self.model)
-        return _parse_logprobs_payload(cached)
+        if cached:
+            # The cache stores the final computed probability dict as a JSON string.
+            return json.loads(cached)
+
+        system_instruction, contents = self._contents(messages)
+        resp = self._generate(contents, generation_config, system_instruction)
+
+        if not resp.candidates:
+            raise ResponseShapeError("No candidates returned from model")
+        candidate = resp.candidates[0]
+
+        # The user specified that MAX_TOKENS is a successful response, since
+        # the output is capped at 1 token anyway.
+        finish_name = candidate.finish_reason.name if hasattr(candidate.finish_reason, 'name') else str(candidate.finish_reason)
+
+        if finish_name not in ("STOP", "MAX_TOKENS"):
+            raise ResponseShapeError(f"Generation failed with reason: {finish_name}")
+
+        if not hasattr(candidate, "logprobs_result") or not candidate.logprobs_result:
+             raise ResponseShapeError("Response did not contain logprobs_result attribute.")
+        if not hasattr(candidate.logprobs_result, "top_candidates") or not candidate.logprobs_result.top_candidates:
+             raise ResponseShapeError("Response did not contain top_candidates.")
+
+        # The user wants p(True) from the logprobs of the first generated token.
+        first_token_logprobs = candidate.logprobs_result.top_candidates[0]
+        true_logprob = -100.0
+        false_logprob = -100.0
+        
+        for cand in first_token_logprobs.candidates:
+            # Strip spaces to handle '" True"' vs '"True"'
+            tok_str = str(getattr(cand, "token", "")).strip()
+            tok_id = getattr(cand, "token_id", None)
+            
+            if tok_str == "True" or tok_id == 4339:
+                true_logprob = cand.log_probability
+            elif tok_str == "False" or tok_id == 9277:
+                false_logprob = cand.log_probability
+
+        result = {
+            "text": "True",
+            "top_logprobs": {"True": true_logprob, "False": false_logprob}
+        }
+        self.cache.set(k, json.dumps(result), backend=self.BACKEND, call="classify", model=self.model)
+        return result
 
     def classify(self, messages_list: list[list[dict]]) -> list[dict]:
         out = self._map(self.classify_one, messages_list)
