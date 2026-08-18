@@ -604,22 +604,35 @@ class VertexClient:
 
         # The user wants p(True) from the logprobs of the first generated token.
         first_token_logprobs = candidate.logprobs_result.top_candidates[0]
-        true_logprob = -100.0
-        false_logprob = -100.0
+        
+        true_lps = []
+        false_lps = []
         
         for cand in first_token_logprobs.candidates:
-            # Strip spaces to handle '" True"' vs '"True"'
-            tok_str = str(getattr(cand, "token", "")).strip()
-            tok_id = getattr(cand, "token_id", None)
+            # 1. Extract, lowercase, and strip spaces AND common punctuation
+            tok_str = str(getattr(cand, 'token', '')).strip().strip('\'"._').lower()
+            tok_id = getattr(cand, 'token_id', None)
             
-            if tok_str == "True" or tok_id == 4339:
-                true_logprob = cand.log_probability
-            elif tok_str == "False" or tok_id == 9277:
-                false_logprob = cand.log_probability
+            # 2. EXACT match only, no substring traps
+            if tok_str == 'true' or tok_id == 4339:
+                true_lps.append(cand.log_probability)
+            elif tok_str == 'false' or tok_id == 9277:
+                false_lps.append(cand.log_probability)
+
+        def safe_logsumexp(lps: list[float]) -> float:
+            if not lps:
+                return -100.0
+            arr = np.array(lps)
+            max_lp = np.max(arr)
+            # LogSumExp prevents numerical underflow for tiny probabilities
+            return float(max_lp + np.log(np.sum(np.exp(arr - max_lp))))
 
         result = {
             "text": "True",
-            "top_logprobs": {"True": true_logprob, "False": false_logprob}
+            "top_logprobs": {
+                "True": safe_logsumexp(true_lps), 
+                "False": safe_logsumexp(false_lps)
+            }
         }
         self.cache.set(k, json.dumps(result), backend=self.BACKEND, call="classify", model=self.model)
         return result

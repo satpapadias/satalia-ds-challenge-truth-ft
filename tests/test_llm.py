@@ -83,6 +83,8 @@ def test_vertex_client_classify_one_success(vertex_client):
     generation_config = {
         "max_output_tokens": 1,
         "top_k": 5,
+        "response_logprobs": True,
+        "logprobs": 5,
         "thinking_config": {"thinking_budget": 0},
     }
     cache_key = vertex_client._cache_key(messages, "classify", **generation_config)
@@ -132,7 +134,7 @@ def test_vertex_client_score_one_success(vertex_client):
     mock_response.text = "85"  # The response object also has a text property shortcut
     mock_response.usage_metadata.prompt_token_count = 12
     mock_response.usage_metadata.candidates_token_count = 1
-    vertex_client._client.generate_content.return_value = mock_response
+    vertex_client._client.return_value.generate_content.return_value = mock_response
 
     messages = [{"role": "user", "content": "What is the score?"}]
     result = vertex_client.score_one(messages)
