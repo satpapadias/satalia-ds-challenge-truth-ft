@@ -50,17 +50,45 @@ uv sync --all-groups --all-extras
 
 ## ⚙️ Configuration (.env)
 
-Create a `.env` file in the root directory. To run against the already-deployed custom model, use the exact endpoint below:
+Create a `.env` file from the example (`cp .env.example .env`) and populate it. These variables configure the entire stack, for both local `docker-compose` and cloud deployments.
+
+*(Note: The codebase uses `GOOGLE_CLOUD_PROJECT` for GCP project identification. Some individual scripts may internally use `GCP_PROJECT`, but configuration should always be supplied via `GOOGLE_CLOUD_PROJECT` in the `.env` file.)*
 
 ```env
+# --- GCP Configuration ---
+# Required for Vertex AI and other GCP services.
 GOOGLE_CLOUD_PROJECT="x-wppai-researchlab-wpptestbed"
 GOOGLE_CLOUD_LOCATION="us-central1"
+
+# --- Model Endpoints ---
+# Fine-Tuned model, either a Vertex Endpoint or a deployed model garden ID.
+# To run against the pre-trained model, use this exact endpoint:
 TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/4351713640865333248"
+
+# Zero-shot baseline model (used by model-tools server)
+TRUTHCLF_ZEROSHOT_MODEL="gemini-2.5-flash"
+
+# --- Service Authentication (for local docker-compose cluster) ---
+# Bearer token for authenticating external requests to the orchestrator
+ORCHESTRATOR_TOKEN="a-secure-random-string"
+# Internal bearer token for agent-to-agent (A2A) communication
+AGENT_TOKEN="another-secure-random-string"
+
+# --- Pipeline Behavior ---
+# Weight on the fine-tuned predictor when both answer (log-odds pool). 1.0 defers to it.
+POOL_WEIGHT=1.0
+# Maximum number of statements per /verify request.
+MAX_POINTS=50
+
+# --- Agent Timeouts (seconds) ---
+# Used by the orchestrator for A2A calls.
+PREDICTOR_TIMEOUT_S=120
+EXPLAINER_TIMEOUT_S=600
 ```
 
 ## 💻 Running Locally (End-to-End Pipeline)
 
-To boot the entire local cluster and test the verification payload, simply execute the pipeline bash script. 
+To boot the entire local cluster and test the verification payload, simply execute the pipeline bash script. This script is a wrapper around `docker-compose.yml`, which orchestrates the entire stack of microservices locally.
 
 ```bash
 export TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/4351713640865333248"
@@ -68,14 +96,14 @@ export TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/
 ```
 
 **Execution Flow:**
-1. Boots the `data-tools` and `model-tools` MCP servers.
+1. Boots the `data-tools` and `model-tools` MCP servers via `docker-compose`.
 2. Boots the Orchestrator and 3 specialist A2A Agents.
 3. Fires a JSON verification payload for 10 statements to the Orchestrator.
 4. Predicts via live Vertex AI calls, reconciles log-odds, runs occlusion explanations, and shuts down cleanly.
 
 ## ☁️ Cloud Deployment & Security
 
-The application stack deploys natively to GCP Cloud Run. 
+The application stack deploys natively to GCP Cloud Run. The `cloudbuild.yaml` file defines a CI/CD pipeline that automatically builds and pushes the agent and tools images to Google Artifact Registry.
 
 **Infrastructure Provisioning:**
 ```bash
@@ -105,23 +133,28 @@ If you wish to recreate the fine-tuning process, the MLOps pipeline scripts are 
 ## 📂 Project Structure
 
 ```text
-truthclf-agent/
+satalia-ds-challenge-truth-ft/
 ├── pyproject.toml / uv.lock    # Modern dependency management
+├── .env.example                # Environment variable template
+├── Dockerfile                  # Multi-stage container definitions
+├── docker-compose.yml          # Local microservice orchestration
+├── cloudbuild.yaml             # GCP Cloud Build CI/CD pipeline
 ├── test_pipeline.sh            # Master boot & test execution script
 ├── deploy.sh                   # Cloud Run deployment script
 ├── terraform/                  # GCP Infrastructure as Code
 ├── truthclf/                   # Core application logic & domain objects
-├── truthclf_agents/            # A2A Agent implementations
-│   ├── orchestrator/
-│   ├── zero_shot/
-│   ├── fine_tuned/
-│   └── explainer/
+├── truthclf_agents/            # A2A Agent implementations (pure MCP clients)
+│   ├── orchestrator.py
+│   ├── zero_shot.py
+│   ├── fine_tuned.py
+│   └── explainer.py
 ├── truthclf_mcp/               # Model Context Protocol servers
-│   ├── data_tools/
-│   └── model_tools/
+│   ├── data_tools.py
+│   └── model_tools.py
 ├── scripts/                    # Standalone MLOps scripts
 │   ├── vertex_finetune.py      # Data prep and SFT trigger
 │   └── fit_new_calibrator.py   # Platt scaling generation
+├── tests/                      # Pytest integration & unit tests
 └── results/
     └── calibrators/            # JSON Platt-scaling configurations
 ```
