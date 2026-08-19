@@ -7,7 +7,6 @@ README for usage; import submodules directly (e.g. ``from truthclf import data``
 
 from __future__ import annotations
 
-# Load secrets (e.g. TOGETHER_API_KEY) from a project-root .env at import time,
 # so any script that imports this package can read them via os.getenv(...).
 # Searches from the current working directory upward; no-op if .env is absent.
 #

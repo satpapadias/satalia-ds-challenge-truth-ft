@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from truthclf import data, evaluation, experiments
 
-BASE = "google/gemma-4-31B-it"
+BASE = "gemini-2.5-flash"
 VARIANT = "full"
 SCHEME = "primary"
 
@@ -27,7 +27,7 @@ def main():
     vy = [r.y(SCHEME) for r in val]
     ty = [r.y(SCHEME) for r in test]
 
-    # logprob/decision elicitation on both sides, via the Together Batch API
+    # logprob/decision elicitation on both sides
     # (single job per split — minutes, not a serial per-row loop)
     vp, _ = experiments.run_on_rows(BASE, VARIANT, val, SCHEME, use_logprobs=True, backend="batch")
     tp, _ = experiments.run_on_rows(BASE, VARIANT, test, SCHEME, use_logprobs=True, backend="batch")

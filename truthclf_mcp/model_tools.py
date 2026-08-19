@@ -48,7 +48,7 @@ ARTIFACT_DIR = os.environ.get(
 ZERO_SHOT_MODEL = os.environ.get("TRUTHCLF_ZEROSHOT_MODEL", "gemini-2.5-flash")
 FINE_TUNED_MODEL = os.environ.get(
     "TRUTHCLF_FT_MODEL",
-    "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d")
+    "gemini-2.5-flash")
 FT_PROB_CACHE = os.environ.get(
     "TRUTHCLF_FT_CACHE", os.path.join(PROJECT_ROOT, FT.FT_PROB_CACHE))
 # Companion to the probabilities: which statement each one was computed for.

@@ -1,5 +1,5 @@
 """Threshold tuning + calibration + metadata ablation + selective prediction
-for the lead config (gemma-4-31B-it [full]).
+for the lead config.
 
 Runs in SCORE mode (use_logprobs=False) on purpose: threshold sweeps, reliability,
 and the abstention curve need continuous probabilities, which the 0-100 score
@@ -46,8 +46,6 @@ def main():
 
     hr("3. METADATA ABLATION (TEST split): statement-only vs full")
     print(experiments.ablation_table().to_string(index=False))
-    print("\n  -> metadata helps Gemma; for Qwen the 'full' prompt inflates "
-          "rec_True at the expense of rec_False (True-over-prediction bias).")
 
     hr("4. SELECTIVE PREDICTION (TEST, raw-score confidence): coverage vs accuracy")
     ty, tp = res.test_labels, res.test_probs

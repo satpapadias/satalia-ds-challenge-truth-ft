@@ -94,7 +94,7 @@ class CalibratorModelMismatch(ValueError):
     never a warning.
 
     THE ELICITATION MODE IS PART OF THAT IDENTITY, and schema 2 did not record
-    it. Both zero-shot artifacts here carry model "google/gemma-4-31B-it": the
+    it. Both zero-shot artifacts here carry model "gemini-2.5-flash": the
     logprob baseline (A=0.0478, B=0.0922, thr=0.5438) and the score-mode
     secondary (A=0.0412, B=0.1901, thr=0.5515). A check keyed on the model alone
     accepted either artifact on either predictor — different probability scales,

@@ -67,7 +67,7 @@ def run_zeroshot(model: str, variant: str = "full", n_rows: int = 200,
 
 
 def zeroshot_predictor(model, variant="full", backend="sync", **kw):
-    """Build a ZeroShotPredictor wired to a Together client (for the explainer)."""
+    """Build a ZeroShotPredictor wired to a client."""
     return ZeroShotPredictor(model=model, variant=variant,
                              client=llm.make_client(model, backend=backend), **kw)
 
@@ -126,7 +126,7 @@ def _row(name, labels, probs, thr):
 
 # In this encoding 1 = True/truthful, so "passing a falsehood as true" is a FALSE
 # POSITIVE. That is the costlier error in a misinformation setting, so c_fp > c_fn.
-def phase_a_eval(model="google/gemma-4-31B-it", variant="full", scheme="primary",
+def phase_a_eval(model="gemini-2.5-flash", variant="full", scheme="primary",
                  seed=0, data_path="data.csv", c_fn=1.0, c_fp=2.0):
     """Threshold tuning + calibration for the lead config, tuned on a speaker-
     disjoint validation split and reported on the untouched test split."""
@@ -174,15 +174,14 @@ def phase_a_eval(model="google/gemma-4-31B-it", variant="full", scheme="primary"
 
 
 def ablation_table(test_rows=None, scheme="primary", seed=0, data_path="data.csv"):
-    """Metadata ablation on the test split: both bases x statement-only/full,
-    highlighting the per-class recall (the Qwen True-bias)."""
+    """Metadata ablation on the test split."""
     import pandas as pd
     if test_rows is None:
         rows = data.load(data_path)
         clean, _ = data.clean_dataset(rows, scheme)
         _, _, test_rows = data.speaker_disjoint_3way(clean, 0.2, 0.2, seed, scheme)
     out = []
-    for model in ("google/gemma-4-31B-it", "Qwen/Qwen3.5-9B"):
+    for model in ("gemini-2.5-flash",):
         for variant in ("statement_only", "full"):
             probs, labels = run_on_rows(model, variant, test_rows, scheme, backend="batch")
             import numpy as np

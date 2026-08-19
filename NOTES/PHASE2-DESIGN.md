@@ -293,8 +293,7 @@ legitimate diagnostic but silently moves the threshold from 0.5438 to 0.5, so
 the response says which was used and warns.
 
 Three artifacts load: `('gemini-2.5-flash', 'logprob')`,
-`('gemini-2.5-flash', 'score')`, and
-`('makisntpap_17e5/…-c7afbf0d', 'logprob')`.
+`('gemini-2.5-flash', 'score')`.
 
 ---
 

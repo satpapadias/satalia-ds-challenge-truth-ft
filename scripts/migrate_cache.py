@@ -45,7 +45,6 @@ from truthclf import data, explain, llm, prompts  # noqa: E402
 V1_PATH = ".llm_cache.json"
 SCHEME, DATA_PATH = "primary", "data.csv"
 GEMMA = "gemini-2.5-flash"
-QWEN = "Qwen/Qwen3.5-9B"
 
 
 def _cfg(model):
@@ -102,7 +101,7 @@ def _requests():
                 dict(max_tokens=64, kind="complete", **params)
 
     # --- batch entrypoints
-    for m in (QWEN, GEMMA):                                    # benchmark_zeroshot.py
+    for m in (GEMMA,):                                    # benchmark_zeroshot.py
         for v in ("statement_only", "full"):
             yield from score(m, clean, v, "batch")
     yield from classify(GEMMA, val + test, "full", "batch")    # zeroshot_baseline, eval_finetune

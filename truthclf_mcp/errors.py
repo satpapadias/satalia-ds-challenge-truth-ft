@@ -37,9 +37,10 @@ class FineTunedRowNotCached(KeyError):
 class FineTunedModelNotServable(RuntimeError):
     """The fine-tuned adapter cannot be served by the provider.
 
-    Together returns HTTP 400 with code `model_not_available` ("Unable to access
-    non-serverless model") for this adapter. That is a capability statement, not
-    a transient failure, and it is correctly excluded from the retry policy.
+    For example, a provider may return an HTTP 400 with code `model_not_available`
+    ("Unable to access non-serverless model") for an adapter. That is a
+    capability statement, not a transient failure, and it is correctly
+    excluded from the retry policy.
     """
 
 

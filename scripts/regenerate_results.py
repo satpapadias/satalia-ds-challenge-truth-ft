@@ -39,7 +39,7 @@ from truthclf.predictors import finetuned  # noqa: E402
 from truthclf.predictors.zeroshot import parse_score, prob_from_logprobs  # noqa: E402
 
 G = "gemini-2.5-flash"
-FT_MODEL = "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d"
+FT_MODEL = "gemini-2.5-flash"
 ARTIFACT_DIR = "results/calibrators"
 _LAST_EVAL = []
 EX = {"chat_template_kwargs": {"enable_thinking": False}}
@@ -60,7 +60,7 @@ class LiveSource:
                 f"schema-2 response cache not found at {llm._DEFAULT_CACHE}.\n"
                 "It is gitignored, so a fresh clone does not have one. Rebuild it:\n"
                 "    python3 scripts/migrate_cache.py --apply       # from the tracked v1 archive\n"
-                "    python3 scripts/refetch_quarantined.py         # ~$0.33, needs TOGETHER_API_KEY\n"
+                "    python3 scripts/refetch_quarantined.py\n"
                 "Or run fully offline from the tracked archive instead:\n"
                 "    python3 scripts/regenerate_results.py --source archive "
                 "--explainer-source archive")
