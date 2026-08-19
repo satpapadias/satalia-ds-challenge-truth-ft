@@ -38,7 +38,7 @@ from truthclf.predictors import ZeroShotPredictor
 from truthclf.predictors.zeroshot import prob_from_logprobs
 from together import Together
 
-BASE = "google/gemma-4-31B-it"
+BASE = "gemini-2.5-flash"
 FT = "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d"
 HARDWARE = "2x_nvidia_h100_80gb_sxm"
 SCHEME, VARIANT = "primary", "full"

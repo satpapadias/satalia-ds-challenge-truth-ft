@@ -47,7 +47,7 @@ async def call_tool(server_url: str, tool: str, arguments: dict,
     tool call appears under the same trace as the A2A hop that caused it.
     """
     headers = outbound_headers()
-    auth = GcpAuth()
+    auth = None if "127.0.0.1" in server_url or "localhost" in server_url else GcpAuth()
     try:
         async with httpx2.AsyncClient(
             headers=headers, auth=auth, timeout=timeout
@@ -97,8 +97,9 @@ def _unwrap(tool: str, result) -> Any:
 
 async def probe(server_url: str) -> list[str]:
     """Tool names exposed by a server. Used as a start-up reachability check."""
+    auth = None if "127.0.0.1" in server_url or "localhost" in server_url else GcpAuth()
     async with httpx2.AsyncClient(
-        auth=GcpAuth(), timeout=30.0
+        auth=auth, timeout=30.0
     ) as http_client:
         async with streamable_http_client(server_url, http_client=http_client) as (read, write):
             async with ClientSession(read, write) as session:

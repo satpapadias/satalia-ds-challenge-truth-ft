@@ -18,7 +18,7 @@ import random
 
 from truthclf import data, explain, experiments
 
-BASE = "google/gemma-4-31B-it"
+BASE = "gemini-2.5-flash"
 SCHEME = "primary"
 N_SAMPLE = 300
 SEED = 0

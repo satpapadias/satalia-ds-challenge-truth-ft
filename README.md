@@ -206,7 +206,7 @@ python3 predict.py
 Or in code:
 ```python
 from truthclf import experiments
-pred = experiments.zeroshot_predictor("google/gemma-4-31B-it", variant="full")
+pred = experiments.zeroshot_predictor("gemini-2.5-flash", variant="full")
 rows = experiments.sample_rows("test", n=20)
 res = pred.predict(rows, labels=[r.y("primary") for r in rows])
 print(res.preds, res.metrics)
@@ -221,7 +221,7 @@ python3 scripts/evaluate_finetuned.py    # serve on a short-lived dedicated endp
 In code (`FinetunedPredictor`):
 ```python
 from truthclf.predictors import FinetunedPredictor
-ft = FinetunedPredictor(base_model="google/gemma-4-31B-it", variant="full")
+ft = FinetunedPredictor(base_model="gemini-2.5-flash", variant="full")
 ft.fine_tune(training_dataset)                    # speaker-disjoint train/val split made internally
 preds = ft.predict(test_rows, labels=test_labels)  # same interface as zero-shot
 ```
@@ -235,7 +235,7 @@ artifacts by the evaluation entrypoint:
 ```python
 from truthclf.predictors import ZeroShotPredictor
 pred = ZeroShotPredictor(
-    model="google/gemma-4-31B-it", variant="full", client=client,
+    model="gemini-2.5-flash", variant="full", client=client,
     calibrator="results/calibrators/zero_shot_decision_baseline.json")
 res = pred.predict(points)      # calibrated probabilities, tuned threshold
 ```

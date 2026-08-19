@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from truthclf import data, explain, llm, prompts  # noqa: E402
 
-G = "google/gemma-4-31B-it"
+G = "gemini-2.5-flash"
 NO_THINK = {"chat_template_kwargs": {"enable_thinking": False}}
 SCHEME, VARIANT = "primary", "full"
 

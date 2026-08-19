@@ -38,7 +38,7 @@ from truthclf import calibration, data, evaluation, explain, llm, metrics as M, 
 from truthclf.predictors import finetuned  # noqa: E402
 from truthclf.predictors.zeroshot import parse_score, prob_from_logprobs  # noqa: E402
 
-G = "google/gemma-4-31B-it"
+G = "gemini-2.5-flash"
 FT_MODEL = "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d"
 ARTIFACT_DIR = "results/calibrators"
 _LAST_EVAL = []

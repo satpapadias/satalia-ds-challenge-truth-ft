@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from truthclf import experiments
 
-MODEL = "google/gemma-4-31B-it"
+MODEL = "gemini-2.5-flash"
 VARIANT = "full"
 N = 20
 

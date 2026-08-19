@@ -165,9 +165,10 @@ async def discover(name: str, base_url: str, timeout: float = 300.0) -> Peer:
         for key, value in outbound_headers().items():
             request.headers[key] = value
 
+    auth = None if "127.0.0.1" in base_url or "localhost" in base_url else GcpAuth()
     http = httpx2.AsyncClient(
         timeout=timeout,
-        auth=GcpAuth(),
+        auth=auth,
         event_hooks={"request": [inject_trace]},
     )
 

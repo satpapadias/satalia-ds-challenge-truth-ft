@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from truthclf import experiments, metrics
 
 SCHEME = "primary"
-MODELS = ["Qwen/Qwen3.5-9B", "google/gemma-4-31B-it"]
+MODELS = ["Qwen/Qwen3.5-9B", "gemini-2.5-flash"]
 VARIANTS = ["statement_only", "full"]
 N_BOOT = 1000
 DATA_PATH = "data.csv"

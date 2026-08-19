@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from truthclf import experiments, selective
 
-LEAD_MODEL = "google/gemma-4-31B-it"
+LEAD_MODEL = "gemini-2.5-flash"
 LEAD_VARIANT = "full"
 
 

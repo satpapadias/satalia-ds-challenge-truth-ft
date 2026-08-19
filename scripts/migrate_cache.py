@@ -44,7 +44,7 @@ from truthclf import data, explain, llm, prompts  # noqa: E402
 
 V1_PATH = ".llm_cache.json"
 SCHEME, DATA_PATH = "primary", "data.csv"
-GEMMA = "google/gemma-4-31B-it"
+GEMMA = "gemini-2.5-flash"
 QWEN = "Qwen/Qwen3.5-9B"
 
 

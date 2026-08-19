@@ -113,7 +113,7 @@ directory is absent.
 - **If reversed:** ~6× more calls per point and no clean mapping back to a field.
 - **Two magic constants, both UNDOCUMENTED:** `driver_eps=0.05` ([explain.py:77](../truthclf/explain.py#L77)) decides whether a field "drove" a prediction — it directly sets the 26% speaker-driven share. `threshold=0.5` is a *separate* parameter from the predictor's own threshold and does not know about the calibrator.
 
-### Base model: `google/gemma-4-31B-it`
+### Base model: `gemini-2.5-flash`
 - **Decided:** hard-coded in seven places, e.g. [evaluate_finetuned.py:41](../scripts/evaluate_finetuned.py#L41), [regenerate_results.py:40](../scripts/regenerate_results.py#L40).
 - **Recorded in [docs/decisions.md](../docs/decisions.md):** both serverless-inferenceable and LoRA-fine-tunable under one id, so zero-shot and fine-tuned share a base with no confound. Llama splits `-Reference`/`-Turbo`, which *is* the confound.
 - **If reversed:** the whole fine-tuning comparison becomes uninterpretable.
@@ -376,7 +376,7 @@ difference between negligible and several seconds of CPU per container start.
 
 ### Latency and cost
 **Reporting what is measured:** the batch refetch of 6,075 rows took 17.2 min
-wall-clock at ~$0.33 total (`google/gemma-4-31B-it`, $0.39/$0.97 per 1M tokens,
+wall-clock at ~$0.33 total (`gemini-2.5-flash`, $0.39/$0.97 per 1M tokens,
 ~150 input tokens per row).
 
 **Inferring, and flagging it as inference:** a single cold request against a

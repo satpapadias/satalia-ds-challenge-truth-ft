@@ -52,7 +52,7 @@ METADATA_FIELDS = ("subjects", "speaker_name", "speaker_job", "speaker_state",
 class Point(BaseModel):
     """One statement with its attributes, excluding the label."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     statement: str = Field(description="The claim being evaluated. Required.")
     row_id: int | None = Field(

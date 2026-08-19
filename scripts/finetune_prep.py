@@ -23,7 +23,7 @@ from truthclf import data, llm
 
 SCHEME = "primary"
 VARIANT = "full"
-BASE_MODEL = "google/gemma-4-31B-it"
+BASE_MODEL = "gemini-2.5-flash"
 N_EPOCHS = 3
 OUT_DIR = "ft_data"
 ARTIFACTS = "ft_artifacts.json"
