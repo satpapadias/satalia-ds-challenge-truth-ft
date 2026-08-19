@@ -1,141 +1,127 @@
-# Truthfulness Agent: Multi-Agent MCP Pipeline
+# 🏛️ Truthfulness Agent: Multi-Agent MCP Pipeline
 
-This repository contains a multi-agent system built using the Agent Development Kit (ADK) 2.0 for evaluating the truthfulness of political statements. The system leverages the Model Context Protocol (MCP) for communication between agents, Agent-to-Agent (A2A) routing, and a custom Vertex AI Supervised Fine-Tuned (SFT) model to provide accurate and reliable truthfulness classifications.
+The Truthfulness Agent is a multi-agent, microservice-based system designed for binary truthfulness classification of political statements. Built on the Agent Development Kit (ADK) 2.0, this project implements a highly modular architecture using the Model Context Protocol (MCP) and Agent-to-Agent (A2A) communication.
 
-## 🚀 Features
+The system evaluates statements using both a baseline zero-shot model and a custom Vertex AI Supervised Fine-Tuned (SFT) model. An Orchestrator manages routing, aggregates predictions using a log-odds pool, and delegates to an Explainer agent for rigorous feature-attribution rationales.
 
-*   **Multi-Agent Orchestration:** A sophisticated multi-agent system that coordinates the flow of information and tasks between different agents to achieve a common goal.
-*   **Vertex AI Supervised Fine-Tuning (SFT):** A custom-trained model on Vertex AI using supervised fine-tuning techniques, enhanced with Platt scaling calibration for improved accuracy.
-*   **Model Context Protocol (MCP) Tool Servers:** A set of tool servers that expose the models and other tools to the agents using the MCP protocol, enabling seamless integration and communication.
-*   **Explainability:** Leave-one-field-out occlusion is used to provide insights into the model's decision-making process, enhancing transparency and trust.
-*   **GCP/Cloud Run Deployment:** The entire system is deployed on Google Cloud Platform (GCP) using Terraform, with the application running on Cloud Run for scalability and ease of management.
+## 🚀 Key Features
 
-## 📊 Benchmark Performance
+* **Multi-Agent A2A Orchestration:** The Orchestrator fans out verification tasks to specialist sub-agents (`truthclf-zero-shot-predictor`, `truthclf-fine-tuned-predictor`, `truthclf-explainer`) using `.well-known/agent-card.json` peer discovery.
+* **Vertex AI Supervised Fine-Tuning (SFT):** A custom `gemini-2.5-flash` model natively fine-tuned on GCP infrastructure, proving measurable accuracy gains on unseen, speaker-disjoint data.
+* **Platt Scaling Calibration:** Both the zero-shot and fine-tuned models are calibrated via Platt scaling fitted specifically on a held-out validation split, emitting true probabilistic confidence scores.
+* **Model Context Protocol (MCP):** All agents delegate their dataset retrieval and LLM inference down to centralized `data-tools` and `model-tools` MCP servers.
+* **Explainability via Occlusion:** The Explainer agent programmatically performs leave-one-field-out occlusion (removing metadata like `speaker_name`), measures the mathematical shift in predicted probability, and definitively identifies the driver of the model's decision.
+* **GCP Infrastructure as Code:** The entire cloud environment is provisioned via Terraform, with microservices deployed to Cloud Run behind a secure IAM posture.
 
-The fine-tuned model was benchmarked against a zero-shot baseline to evaluate its performance on a held-out test set. The results demonstrate a significant improvement in accuracy and ROC-AUC, validating the effectiveness of the fine-tuning process.
+## 📊 Benchmark Performance (Held-Out Test Set: N=1,991)
 
-| Model                       | Accuracy | ROC-AUC |
-| --------------------------- | -------- | ------- |
-| Zero-Shot Baseline (gemini-2.5-flash) | 65.22%   | 0.7231  |
-| Fine-Tuned Model (gemini-2.5-flash-sft) | **72.38%** | **0.7961** |
+The custom Vertex AI SFT model was benchmarked against the zero-shot baseline. *Both models were calibrated strictly on the validation set to prevent data leakage.*
 
-The Fine-Tuned model achieved **72.38% Accuracy** and **0.7961 ROC-AUC**, proving a measurable fine-tuning gain on the held-out test set without data leakage.
+| Model | Variant | Accuracy | Balanced Acc. | ROC-AUC | PR-AUC | Brier | ECE |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Base Baseline** | Zero-shot (`gemini-2.5-flash`) | 70.52% | 69.78% | 0.7716 | 0.7810 | 0.1935 | 0.0280 |
+| **SFT Model (GCP)** | Fine-Tuned (`gemini-2.5-flash-sft`) | **72.38%** | **72.21%** | **0.7961** | **0.8037** | **0.1900** | **0.0559** |
 
 ## 🧠 Data Processing & Label Mapping
 
-The original 6-way human labels from the dataset were mapped to a binary target to simplify the classification task. The mapping is as follows:
-
-*   **True:** `true`, `mostly-true`, `half-true`
-*   **False:** `barely-true`, `false`, `extremely-false`
-
-This binary classification approach allows the model to focus on the core task of distinguishing between truthful and untruthful statements.
+The original dataset contained 6-way human labels. These were mapped to a strict binary target to focus the model on the core distinction of truthfulness:
+* **True:** `true`, `mostly-true`, `half-true`
+* **False:** `barely-true`, `false`, `extremely-false`
 
 ## 🛠 Prerequisites & Setup
 
-To run the pipeline locally and deploy it to GCP, you will need the following tools:
+* **Python 3.12+** (configured via `pyproject.toml`)
+* **Google Cloud CLI** (`gcloud`)
+* **Terraform** (≥ 1.6)
 
-*   **Python 3.10+:** The application is written in Python 3.10.
-*   **Virtual Environments:** It is recommended to use a virtual environment to manage dependencies.
-*   **Google Cloud CLI:** The `gcloud` CLI is required for authentication and interacting with GCP services.
-*   **Terraform:** Terraform is used for infrastructure as code to provision the necessary GCP resources.
-
-You can install the required Python packages using the following command:
-
-```bash
-pip install -r requirements.txt
-```
-
-To authenticate with GCP, run the following command:
-
+### 1. GCP Authentication
+Ensure you are authenticated with GCP Application Default Credentials:
 ```bash
 gcloud auth application-default login
 ```
 
+### 2. Environment Setup (using `uv`)
+We highly recommend using `uv`, a fast Python package installer and resolver.
+```bash
+# Sync the virtual environment with all optional groups
+uv sync --all-groups --all-extras
+```
+*(Alternatively, via pip: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[viz,dev,mcp]"`)*
+
 ## ⚙️ Configuration (.env)
 
-The following environment variables are required to run the pipeline. Create a `.env` file in the root directory and add the following variables:
+Create a `.env` file in the root directory. To run against the already-deployed custom model, use the exact endpoint below:
 
-```bash
-GOOGLE_CLOUD_PROJECT=<your-gcp-project-id>
-TRUTHCLF_FT_MODEL=<your-finetuned-model-endpoint>
+```env
+GOOGLE_CLOUD_PROJECT="x-wppai-researchlab-wpptestbed"
+GOOGLE_CLOUD_LOCATION="us-central1"
+TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/4351713640865333248"
 ```
 
-## 💻 Running Locally & Testing
+## 💻 Running Locally (End-to-End Pipeline)
 
-To run the pipeline locally, you need to export the `TRUTHCLF_FT_MODEL` environment variable and then execute the `test_pipeline.sh` script.
+To boot the entire local cluster and test the verification payload, simply execute the pipeline bash script. 
 
 ```bash
-export TRUTHCLF_FT_MODEL=<your-finetuned-model-endpoint>
+export TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/4351713640865333248"
 ./test_pipeline.sh
 ```
 
-The `test_pipeline.sh` script boots the MCP servers, A2A agents, and runs a verification payload to test the entire pipeline.
+**Execution Flow:**
+1. Boots the `data-tools` and `model-tools` MCP servers.
+2. Boots the Orchestrator and 3 specialist A2A Agents.
+3. Fires a JSON verification payload for 10 statements to the Orchestrator.
+4. Predicts via live Vertex AI calls, reconciles log-odds, runs occlusion explanations, and shuts down cleanly.
 
-## ☁️ Deploying to GCP & Security
+## ☁️ Cloud Deployment & Security
 
-The application is deployed to GCP using Terraform. The Terraform scripts in the `/terraform` directory provision the following resources:
+The application stack deploys natively to GCP Cloud Run. 
 
-*   **Cloud Run:** The application is deployed as a serverless container on Cloud Run.
-*   **Google Cloud Storage (GCS):** GCS buckets are used to store artifacts and data.
-*   **Artifact Registry:** The Docker image is stored in Artifact Registry.
+**Infrastructure Provisioning:**
+```bash
+cd terraform
+terraform init
+terraform apply -var="project_id=x-wppai-researchlab-wpptestbed"
+```
 
-### Security
+**Service Deployment:**
+Once the infrastructure (Artifact Registry, VPC, GCS) is ready, deploy the microservices using:
+```bash
+./deploy.sh
+```
 
-Service-to-service communication between the MCP tools and sub-agents is secured using IAM restrictions and network-only authentication. This ensures that only authorized services can communicate with each other, preventing unauthorized access to the system.
+**Defense-in-Depth Security:** 
+Service-to-service communication relies on **per-hop OIDC authentication**. The Orchestrator mints a Google-signed ID token using its compute service account and attaches it as a Bearer token. Cloud Run’s IAM edge validates the token on the receiving agent/MCP server. There are **zero `allUsers` ingress bindings**—all traffic is strictly IAM-locked and routed internally via VPC Private Google Access.
 
-## 🔬 The Fine-Tuning Pipeline
+## 🔬 The MLOps Fine-Tuning Pipeline
 
-The fine-tuning pipeline consists of two main scripts:
+If you wish to recreate the fine-tuning process, the MLOps pipeline scripts are located in `scripts/`.
 
-*   `scripts/vertex_finetune.py`: This script formats the data into JSONL, uploads it to GCS, and triggers a Vertex AI training job to fine-tune the model.
-*   `scripts/fit_new_calibrator.py`: This script fits the Platt scale on the validation set to calibrate the model's predictions, improving the accuracy of the final classification.
+1. **Triggering Vertex SFT:** 
+   `scripts/vertex_finetune.py` extracts a 20% speaker-disjoint split, strictly formats it into Vertex AI's `{"contents": [...]}` JSONL schema, uploads to GCS, and submits the `sft.train` job to Google.
+2. **Generating the Decision Artifact:** 
+   `scripts/fit_new_calibrator.py` queries the deployed Vertex endpoint to extract log-probabilities across the validation split, calculating and exporting the Platt Scaling artifact (`results/calibrators/`).
 
 ## 📂 Project Structure
 
-```
-.
-├───.coverage
-├───.dockerignore
-├───.env.example
-├───.gitignore
-├───.llm_cache.json
-├───arxiv23-perline.pdf
-├───build_deck.py
-├───CLAUDE.md
-├───cloudbuild.yaml
-├───Data Science Challenge - Truth - Full.pdf
-├───data.csv
-├───deploy.sh
-├───docker-compose.yml
-├───Dockerfile
-├───explain_results.json
-├───final_pipeline_run.log
-├───Finetuning_Guide.ipynb
-├───ft_artifacts.json
-├───ft_eval_cache.json
-├───ft_eval_identity.json
-├───ft_eval_results.json
-├───generate_payload.py
-├───LICENSE.txt
-├───payload.json
-├───predict.py
-├───pyproject.toml
-├───qwen_serve_artifacts.json
-├───README.md
-├───run_tests.py
-├───run_vertex_probe.py
-├───test_pipeline.sh
-├───train.jsonl
-├───uv.lock
-├───docs/
-├───ft_data/
-├───NOTES/
-├───results/            # Output directory for evaluation results and artifacts
-├───scripts/            # Standalone scripts for MLOps, evaluation, and data processing
-├───terraform/          # Terraform infrastructure-as-code for GCP deployment
-├───tests/              # Unit and integration tests
-├───truthclf/           # Core application source code
-├───truthclf_agents/    # Agent implementations
-├───truthclf_mcp/       # MCP tool and model servers
-└───truthclf.egg-info/
+```text
+truthclf-agent/
+├── pyproject.toml / uv.lock    # Modern dependency management
+├── test_pipeline.sh            # Master boot & test execution script
+├── deploy.sh                   # Cloud Run deployment script
+├── terraform/                  # GCP Infrastructure as Code
+├── truthclf/                   # Core application logic & domain objects
+├── truthclf_agents/            # A2A Agent implementations
+│   ├── orchestrator/
+│   ├── zero_shot/
+│   ├── fine_tuned/
+│   └── explainer/
+├── truthclf_mcp/               # Model Context Protocol servers
+│   ├── data_tools/
+│   └── model_tools/
+├── scripts/                    # Standalone MLOps scripts
+│   ├── vertex_finetune.py      # Data prep and SFT trigger
+│   └── fit_new_calibrator.py   # Platt scaling generation
+└── results/
+    └── calibrators/            # JSON Platt-scaling configurations
 ```
