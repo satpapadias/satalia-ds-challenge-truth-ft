@@ -20,7 +20,7 @@ from truthclf import data, prompts, llm
 DATA_PATH = "data.csv"
 SCHEME = "primary"
 VARIANTS = ["statement_only", "full"]
-MODELS = ["Qwen/Qwen3.5-9B", "google/gemma-4-31B-it"]
+MODELS = ["gemini-2.5-flash"]
 EST_OUTPUT = 4          # thinking disabled -> a 0-100 score is ~3-4 tokens
 
 

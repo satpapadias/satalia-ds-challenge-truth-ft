@@ -239,7 +239,22 @@ async def _ask(peer_key: str, payload: dict, context_id: str, timeout: float):
     """
     peer = PEERS.get(peer_key)
     if peer is None:
-        return {}, PeerError(peer_key, "error", "peer was not discovered at start-up")
+        # Attempt lazy discovery if not yet found in PEERS
+        url = {
+            "zero_shot": ZERO_SHOT_URL,
+            "fine_tuned": FINE_TUNED_URL,
+            "explainer": EXPLAINER_URL
+        }.get(peer_key)
+        if url:
+            try:
+                log_event(logger, "attempting lazy peer discovery", peer=peer_key, url=url)
+                peer = await peers.discover(peer_key, url)
+                PEERS[peer_key] = peer
+            except Exception as e:
+                return {}, PeerError(peer_key, "error", f"lazy discovery failed: {e}")
+        else:
+            return {}, PeerError(peer_key, "error", f"unknown peer key: {peer_key}")
+
     try:
         reply = await peer.ask(payload, context_id=context_id, timeout=timeout)
     except PeerError as e:
@@ -341,37 +356,69 @@ def verify_route(auth: BearerAuth):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=AGENT_NAME)
-    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    ap.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 9100)))
     args = ap.parse_args()
 
     configure_logging(AGENT_NAME)
-    # Two tokens: the public one the caller presents, and the one this agent
-    # presents to its peers, so a leaked public token cannot drive them directly.
-    auth = BearerAuth("ORCHESTRATOR_TOKEN")
-    agent_token = os.environ.get("AGENT_TOKEN", "")
-    if not agent_token:
-        raise RuntimeError("AGENT_TOKEN is not set; the orchestrator cannot "
-                           "authenticate to its peer agents")
+    # The public token for the /verify endpoint. In GCP, this is checked by the
+    # A2A Gateway and the app checks it again as defense-in-depth.
+    # Agent-to-agent calls will be authenticated by per-hop OIDC ID tokens
+    # validated by Cloud Run's IAM layer, so no app-level token is needed there.
+    public_auth = BearerAuth("ORCHESTRATOR_TOKEN")
 
     async def startup():
-        # Capability discovery, once. A peer that cannot be reached now is
-        # reported at boot rather than on the first request that needs it.
-        for key, url in (("zero_shot", ZERO_SHOT_URL),
-                         ("fine_tuned", FINE_TUNED_URL),
-                         ("explainer", EXPLAINER_URL)):
-            try:
-                PEERS[key] = await peers.discover(key, url, agent_token)
-            except Exception as e:
-                log_event(logger, "peer discovery failed", peer=key, url=url,
-                          error=type(e).__name__, detail=str(e)[:300])
-        tools = await mcp_client.probe(DATA_TOOLS_URL)
-        log_event(logger, "connected to data-tools", url=DATA_TOOLS_URL, tools=tools)
+        async def discover_loop():
+            # Discover peers in background
+            missing_peers = {
+                "zero_shot": ZERO_SHOT_URL,
+                "fine_tuned": FINE_TUNED_URL,
+                "explainer": EXPLAINER_URL
+            }
+            delay = 1.0
+            while missing_peers:
+                # If a peer was already discovered by a lazy load, we skip it
+                for key in list(missing_peers.keys()):
+                    if key in PEERS:
+                        del missing_peers[key]
+
+                if not missing_peers:
+                    break
+
+                to_remove = []
+                for key, url in list(missing_peers.items()):
+                    try:
+                        PEERS[key] = await peers.discover(key, url)
+                        to_remove.append(key)
+                    except Exception as e:
+                        log_event(logger, "peer discovery failed, retrying...", peer=key, url=url,
+                                  error=type(e).__name__, detail=str(e)[:150])
+                for key in to_remove:
+                    del missing_peers[key]
+                if missing_peers:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+
+            # Probe data-tools in background
+            data_tools_connected = False
+            delay = 1.0
+            while not data_tools_connected:
+                try:
+                    tools = await mcp_client.probe(DATA_TOOLS_URL)
+                    log_event(logger, "connected to data-tools", url=DATA_TOOLS_URL, tools=tools)
+                    data_tools_connected = True
+                except Exception as e:
+                    log_event(logger, "data-tools probe failed, retrying...", url=DATA_TOOLS_URL,
+                              error=type(e).__name__, detail=str(e)[:150])
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+
+        asyncio.create_task(discover_loop())
 
     app = build_app(
         agent_name=AGENT_NAME, executor=OrchestratorExecutor(),
-        card_builder=orchestrator_card, auth=auth,
-        extra_routes=[Route("/verify", verify_route(auth), methods=["POST"])],
+        card_builder=orchestrator_card, auth=None,
+        extra_routes=[Route("/verify", verify_route(public_auth), methods=["POST"])],
         on_startup=startup)
     run(app, args.host, args.port, AGENT_NAME)
 

@@ -1,4 +1,4 @@
-"""Full-test zero-shot evaluation via the Together Batch API.
+"""Full-test zero-shot evaluation.
 
 Runs both candidate bases x both prompt variants over the FULL cleaned dataset
 using the batch backend (cheaper, no concurrency code), caches all responses,
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from truthclf import experiments, metrics
 
 SCHEME = "primary"
-MODELS = ["Qwen/Qwen3.5-9B", "google/gemma-4-31B-it"]
+MODELS = ["gemini-2.5-flash"]
 VARIANTS = ["statement_only", "full"]
 N_BOOT = 1000
 DATA_PATH = "data.csv"

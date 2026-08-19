@@ -1,13 +1,10 @@
-"""Zero-shot scale check on a 200-row dev subset (Together AI).
+"""Zero-shot scale check on a 200-row dev subset.
 
 Runs the three real fine-tune-base candidates (each is both serverless and
 LoRA-fine-tunable under a SINGLE id — no Reference/Turbo confound) and reports a
 combined table that also includes the previously cached context models
 (gpt-oss-20b, Llama-3.3-70B-Turbo). Prints a cost estimate first; responses are
 cached so reruns are free.
-
-Reasoning models are configured in llm.MODEL_CONFIGS: gpt-oss uses
-reasoning_effort='low' + a larger budget; Qwen/Gemma disable thinking.
 """
 
 from __future__ import annotations
@@ -26,13 +23,12 @@ SEED = 0
 VARIANTS = ["statement_only", "full"]
 
 # Real fine-tune-base candidates (this round).
-CANDIDATES = ["Qwen/Qwen3.5-9B", "google/gemma-4-31B-it", "openai/gpt-oss-120b"]
+CANDIDATES = ["openai/gpt-oss-120b"]
 # Context only (already cached from the previous round).
 CONTEXT = ["openai/gpt-oss-20b", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
 
 # Rough output-token budget per call, for the pre-run cost estimate.
 EST_OUTPUT = {
-    "Qwen/Qwen3.5-9B": 3, "google/gemma-4-31B-it": 3,
     "openai/gpt-oss-120b": 400, "openai/gpt-oss-20b": 100,
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": 2,
 }

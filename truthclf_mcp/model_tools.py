@@ -45,10 +45,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARTIFACT_DIR = os.environ.get(
     "TRUTHCLF_CALIBRATOR_DIR", os.path.join(PROJECT_ROOT, "results/calibrators"))
 
-ZERO_SHOT_MODEL = os.environ.get("TRUTHCLF_ZEROSHOT_MODEL", "google/gemma-4-31B-it")
+ZERO_SHOT_MODEL = os.environ.get("TRUTHCLF_ZEROSHOT_MODEL", "gemini-2.5-flash")
 FINE_TUNED_MODEL = os.environ.get(
     "TRUTHCLF_FT_MODEL",
-    "makisntpap_17e5/gemma-4-31B-it-gemma_truth_sft-c7afbf0d")
+    "gemini-2.5-flash")
 FT_PROB_CACHE = os.environ.get(
     "TRUTHCLF_FT_CACHE", os.path.join(PROJECT_ROOT, FT.FT_PROB_CACHE))
 # Companion to the probabilities: which statement each one was computed for.
@@ -122,17 +122,13 @@ class _Calibrators:
 
 CALIBRATORS = _Calibrators(ARTIFACT_DIR)
 
-# The credential is checked but not required to start: the stored fine-tuned
-# path and the cost-estimate path are fully functional without one, so refusing
-# to boot would disable working tools. A live call raises instead.
-_HAS_KEY = bool(os.environ.get("TOGETHER_API_KEY"))
-
-
-def _require_key() -> None:
-    if not os.environ.get("TOGETHER_API_KEY"):
-        raise ProviderCredentialMissing(
-            "TOGETHER_API_KEY is not set, so no live model call can be made. "
-            "Stored fine-tuned probabilities and estimate_only=true still work.")
+# Vertex AI credentials are checked but not required to start: the stored
+# fine-tuned path and the cost-estimate path are fully functional without them,
+# so refusing to boot would disable working tools. A live call raises instead if
+# they are missing.
+_HAS_VERTEX_CREDS = bool(
+    os.environ.get("GOOGLE_CLOUD_PROJECT") and os.environ.get("GOOGLE_CLOUD_LOCATION")
+)
 
 
 def _clean_json(x):
@@ -286,11 +282,11 @@ def _build_predictor(model: str, elicitation: str, calibrator=None):
     same, since FinetunedPredictor delegates to a zero-shot predictor bound to
     its served model, but the serving configuration for the fine-tuned model
     belongs on the type that owns it: when it is served from somewhere with a
-    live endpoint, that is where the change lands.
+    live endpoint (as it is on Vertex AI), that is where the change lands.
     """
-    _require_key()
     served = ZERO_SHOT_MODEL if model == "zero_shot" else FINE_TUNED_MODEL
-    client = llm.make_client(served)
+    # The client backend defaults to "vertex", which is what we want.
+    client = llm.make_client(served, backend="vertex")
     use_logprobs = elicitation == "logprob"
     if model == "fine_tuned":
         return FinetunedPredictor(
@@ -315,7 +311,8 @@ def _live_call(model: str):
     except Exception as e:
         text = str(e)
         if model == "fine_tuned" and (
-                "model_not_available" in text or "non-serverless" in text):
+            "model_not_available" in text or "non-serverless" in text
+        ):
             raise FineTunedModelNotServable(
                 f"the provider refused to serve {FINE_TUNED_MODEL}: {e}. This is "
                 "a capability response, not a transient failure, and is not "
@@ -434,7 +431,6 @@ def predict(
         cached_session = (f"stored per-row probabilities from the dedicated "
                           f"endpoint evaluation ({os.path.basename(FT_PROB_CACHE)})")
     else:
-        _require_key()
         if len(rows) > max_live_calls:
             raise ValueError(
                 f"{len(rows)} points would exceed max_live_calls={max_live_calls}. "
@@ -637,22 +633,23 @@ async def healthz(request):
     return JSONResponse({"status": "ok", "server": "model-tools",
                          "calibrators": len(CALIBRATORS.by_key),
                          "stored_finetuned_rows": len(_stored_identity()),
-                         "provider_credential": _HAS_KEY})
+                         "provider_credential": _HAS_VERTEX_CREDS})
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="truthclf model-tools MCP server")
-    ap.add_argument("--host", default=os.environ.get("TRUTHCLF_MCP_HOST", "127.0.0.1"))
+    ap.add_argument("--host", default=os.environ.get("TRUTHCLF_MCP_HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int,
-                    default=int(os.environ.get("TRUTHCLF_MODEL_TOOLS_PORT", 8082)))
+                    default=int(os.environ.get("PORT", 8082)))
     ap.add_argument("--path", default="/mcp")
     args = ap.parse_args()
     print(f"model-tools: {len(CALIBRATORS.by_key)} calibrators loaded "
           f"{sorted(CALIBRATORS.by_key)}", flush=True)
-    if not _HAS_KEY:
+    if not _HAS_VERTEX_CREDS:
         warnings.warn(
-            "TOGETHER_API_KEY is not set. Stored fine-tuned probabilities and "
-            "estimate_only=true work; any live call will raise.",
+            "GOOGLE_CLOUD_PROJECT and/or GOOGLE_CLOUD_LOCATION are not set. "
+            "Stored fine-tuned probabilities and estimate_only=true work; "
+            "any live call will raise.",
             RuntimeWarning, stacklevel=2)
     print(f"model-tools listening on http://{args.host}:{args.port}{args.path}",
           flush=True)

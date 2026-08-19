@@ -472,9 +472,9 @@ async def healthz(request):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="truthclf data-tools MCP server")
-    ap.add_argument("--host", default=os.environ.get("TRUTHCLF_MCP_HOST", "127.0.0.1"))
+    ap.add_argument("--host", default=os.environ.get("TRUTHCLF_MCP_HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int,
-                    default=int(os.environ.get("TRUTHCLF_DATA_TOOLS_PORT", 8081)))
+                    default=int(os.environ.get("PORT", 8081)))
     ap.add_argument("--path", default="/mcp")
     args = ap.parse_args()
     print(f"data-tools: {CORPUS.index_size} train rows indexed "

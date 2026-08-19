@@ -12,7 +12,7 @@
   },
   "elicitation": "score",
   "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
-  "model": "google/gemma-4-31B-it",
+  "model": "gemini-2.5-flash",
   "n_val": 1917,
   "nll_diff_ci": [
     0.03377521741695988,

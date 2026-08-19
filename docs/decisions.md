@@ -10,7 +10,7 @@ Short, dated records of non-obvious choices and the evidence behind them.
 Carry **two** candidate base models in parallel through the next phase:
 
 - `Qwen/Qwen3.5-9B`
-- `google/gemma-4-31B-it`
+- `gemini-2.5-flash`
 
 **Why:**
 - **OpenAI is out.** gpt-4o-mini is deprecated/unlisted (2026-06) and OpenAI's
@@ -108,7 +108,7 @@ experiment; the primary signal remains the 0–100 score.
 
 ## 2026-06-24 — Lead config locked: gemma-4-31B-it [full]
 
-**Decision:** LEAD = `google/gemma-4-31B-it` with the `full` (metadata) prompt.
+**Decision:** LEAD = `gemini-2.5-flash` with the `full` (metadata) prompt.
 SECONDARY (kept) = `Qwen/Qwen3.5-9B` with `statement_only`.
 
 **Evidence (full test set, n=9,618, primary labels, 95% bootstrap CIs):**
@@ -173,9 +173,9 @@ and started re-querying the API — fixed so cache hits are location-independent
 
 ## 2026-06-24 — Fine-tuning plan: LoRA SFT, serverless only (DPO excluded)
 
-**Serverless LoRA gate — PASSED for `google/gemma-4-31B-it`:** the base is
+**Serverless LoRA gate — PASSED for `gemini-2.5-flash`:** the base is
 serverless-callable (verified live), is LoRA-fine-tunable under the same id, the
-catalog exposes the serverless multi-LoRA serving id `google/gemma-4-31B-it-lora`,
+catalog exposes the serverless multi-LoRA serving id `gemini-2.5-flash-lora`,
 and Together's serverless LoRA inference is billed at base per-token rates. So a
 LoRA fine-tune can be served serverlessly (per-token) — **no dedicated endpoint**.
 Gemma logprobs are available (for the eval's p(True)).
@@ -229,7 +229,7 @@ no dedicated endpoint):
   Qwen as the serverless-LoRA families, not Gemma.
 
 **Lesson (gate was insufficient):** the pre-launch gate trusted the catalog entry
-`google/gemma-4-31B-it-lora` as proof of serverless LoRA serving. That was a false
+`gemini-2.5-flash-lora` as proof of serverless LoRA serving. That was a false
 positive — the catalog `-lora` id does NOT guarantee a *custom* adapter can be
 served serverlessly. The only reliable verification is actually serving an
 adapter, which is only possible post-training. Going forward, verify serverless

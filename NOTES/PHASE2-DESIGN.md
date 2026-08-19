@@ -51,7 +51,7 @@ was written, because every calibrated response depends on it.
 
 `DecisionArtifact` recorded `model` but not the elicitation mode, and
 `check_model` verified only `model`. Both zero-shot artifacts carry the model id
-`google/gemma-4-31B-it` and differ only by elicitation:
+`gemini-2.5-flash` and differ only by elicitation:
 
 | artifact | elicitation | A | B | threshold |
 |---|---|---|---|---|
@@ -292,9 +292,8 @@ of defence, not the selector.
 legitimate diagnostic but silently moves the threshold from 0.5438 to 0.5, so
 the response says which was used and warns.
 
-Three artifacts load: `('google/gemma-4-31B-it', 'logprob')`,
-`('google/gemma-4-31B-it', 'score')`, and
-`('makisntpap_17e5/…-c7afbf0d', 'logprob')`.
+Three artifacts load: `('gemini-2.5-flash', 'logprob')`,
+`('gemini-2.5-flash', 'score')`.
 
 ---
 

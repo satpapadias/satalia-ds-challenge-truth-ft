@@ -1,12 +1,11 @@
-"""Fine-tuned predictor: LoRA supervised fine-tuning on Together, then prediction
+"""Fine-tuned predictor: supervised fine-tuning, then prediction
 through the resulting model.
 
 `predict(points, labels=None)` has the same signature and behaviour as
 ZeroShotPredictor.predict (it delegates to a ZeroShotPredictor pointed at the
 served fine-tuned model), so the two are interchangeable.
 
-Serving note: serverless serving of a custom LoRA adapter was not available for
-our base model on Together, so the fine-tuned model is served via a dedicated
+Serving note: the fine-tuned model is served via a dedicated
 endpoint for evaluation (see evaluate_finetuned.py and the README). Pass a `client`
 configured for the served model, or set `served_model` to the endpoint/model id.
 """
@@ -38,49 +37,56 @@ class FinetunedPredictor(Predictor):
     def fine_tune(self, training_dataset, val_rows=None, n_epochs=3, learning_rate=1e-5,
                   suffix="truthclf_sft", lora=True, train_on_inputs="auto",
                   poll=True, workdir="ft_data", poll_interval=30):
-        """Prepare the data, split off a validation set, and launch a LoRA SFT job on
-        Together. Pass a single labelled training_dataset (same format as data.csv);
+        """Prepare the data, split off a validation set, and launch a LoRA SFT job.
+        Pass a single labelled training_dataset (same format as data.csv);
         a speaker-disjoint train/validation split is made internally (an explicit
         val_rows overrides it). Polls to completion by default and stores output_name."""
-        from together import Together
-        if val_rows is None:
-            train_rows, val_rows = data.speaker_disjoint_split(
-                training_dataset, test_frac=0.2, seed=0, scheme=self.scheme)
-        else:
-            train_rows = training_dataset
-        os.makedirs(workdir, exist_ok=True)
-        client = Together()
+        import subprocess
+        import re
 
-        tr_path = os.path.join(workdir, "train.jsonl")
-        data.write_sft_jsonl(train_rows, tr_path, self.variant, self.scheme)
-        kwargs = dict(model=self.base_model,
-                      training_file=client.files.upload(file=tr_path, purpose="fine-tune",
-                                                        check=True).id,
-                      lora=lora, n_epochs=n_epochs, learning_rate=learning_rate,
-                      train_on_inputs=train_on_inputs, suffix=suffix)
-        if val_rows:
-            va_path = os.path.join(workdir, "val.jsonl")
-            data.write_sft_jsonl(val_rows, va_path, self.variant, self.scheme)
-            kwargs["validation_file"] = client.files.upload(file=va_path, purpose="fine-tune",
-                                                            check=True).id
-            kwargs["n_evals"] = 10
+        print(f"Delegating to scripts/vertex_finetune.py to launch the SFT job...")
+        
+        # This assumes the script is run from the project root.
+        script_path = "scripts/vertex_finetune.py"
+        
+        try:
+            # We use subprocess.run to execute the script and capture its output.
+            # The output is streamed to stdout/stderr in real time, and also captured.
+            result = subprocess.run(
+                ["python", "-u", script_path], 
+                capture_output=True, 
+                text=True, 
+                check=True,  # Raises CalledProcessError on non-zero exit codes
+                encoding='utf-8'
+            )
+            
+            # Search for the job resource name in the script's output
+            output = result.stdout
+            print(output) # Also print the full output for visibility
 
-        resp = client.fine_tuning.create(**kwargs)
-        self.job_id = getattr(resp, "id", None) or getattr(getattr(resp, "job", None), "id", None)
+            match = re.search(r"Job Resource Name: (projects/.*/locations/.*/tuningJobs/.*)", output)
+            if match:
+                self.job_id = match.group(1).strip()
+                print(f"Captured Job ID: {self.job_id}")
 
-        if poll:
-            while True:
-                job = client.fine_tuning.retrieve(self.job_id)
-                st = str(getattr(job, "status", "")).upper()
-                if "COMPLET" in st:
-                    break
-                if any(x in st for x in ("FAIL", "ERROR", "CANCEL")):
-                    raise RuntimeError(f"fine-tuning job ended with status {st}")
-                time.sleep(poll_interval)
-            job = client.fine_tuning.retrieve(self.job_id)
-            self.output_name = (getattr(job, "model_output_name", None)
-                                or getattr(job, "output_name", None))
-        return self.output_name
+                # After a successful run, the model name might also be available
+                match_model = re.search(r"Tuned model available: (projects/.*/locations/.*/models/.*)", output)
+                if match_model:
+                    self.output_name = match_model.group(1).strip()
+                    print(f"Captured Tuned Model Name: {self.output_name}")
+            else:
+                 print("Could not find Job Resource Name in the script output.")
+
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error running {script_path}:")
+            print(e.stdout)
+            print(e.stderr)
+            raise RuntimeError(f"Fine-tuning script failed with exit code {e.returncode}") from e
+        except FileNotFoundError:
+            print(f"Error: The script at '{script_path}' was not found.")
+            raise
+
 
     def _delegate(self):
         served = self.served_model or self.output_name

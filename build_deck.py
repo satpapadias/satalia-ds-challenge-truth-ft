@@ -122,7 +122,7 @@ def _offline_zeroshot_probs(rows):
     SAME batch client the live run used (base_decision_probs) so the cached
     value-format matches. Verifies 100% coverage and raises before any network
     call on a miss (all-cached -> _serve never submits a batch)."""
-    client = llm.TogetherBatchClient("google/gemma-4-31B-it", max_output_tokens=1,
+    client = llm.TogetherBatchClient("gemini-2.5-flash", max_output_tokens=1,
                                      extra_create_kwargs=_NO_THINK)
     missing = [r.row_id for r in rows
                if client.cache.get(client._key_classify(
@@ -130,7 +130,7 @@ def _offline_zeroshot_probs(rows):
     if missing:
         raise RuntimeError(f"reliability fig: {len(missing)}/{len(rows)} zero-shot rows "
                            f"not cached — aborting to avoid API calls")
-    pred = ZeroShotPredictor("google/gemma-4-31B-it", "full", client=client,
+    pred = ZeroShotPredictor("gemini-2.5-flash", "full", client=client,
                              use_logprobs=True)
     return pred.predict(rows).probs
 

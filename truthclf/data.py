@@ -389,21 +389,32 @@ def dev_subset(rows, n: int = 200, seed: int = 0) -> list:
 # Supervised fine-tuning (SFT) data serialization
 # ---------------------------------------------------------------------------
 def to_sft_record(row: Row, variant: str = "full", scheme: str = "primary") -> dict:
-    """Build one Together SFT chat record for a row.
+    """Build one SFT chat record for a row in the 'contents' format."""
+    from . import prompts  # lazy import to avoid a cycle
+    
+    # Per Vertex AI documentation, the system prompt should be the first turn.
+    # The full user prompt includes all metadata.
+    system_prompt = prompts.SYSTEM_DECISION
+    user_prompt_text = prompts.build_user_prompt(row, variant, mode="decision")
 
-    messages = [system, user] from our locked prompt (decision mode: the model is
-    asked for True/False), and the assistant turn is the single label token
-    ("True"/"False"). With train_on_inputs="auto" the input is masked and loss is
-    computed on the label token only.
-    """
-    from . import prompts                         # lazy import to avoid a cycle
-    msgs = prompts.build_messages(row, variant, mode="decision")
-    label = "True" if row.y(scheme) == 1 else "False"
-    return {"messages": msgs + [{"role": "assistant", "content": label}]}
+    # The expected model output.
+    model_response_text = "True" if row.y(scheme) == 1 else "False"
+    
+    # The new 'contents' format does not use a system role. The convention is
+    # to place the system prompt as the first 'user' turn, but for SFT,
+    # it's often included directly in the user prompt. We will combine them.
+    full_user_prompt = f"{system_prompt}\n\n{user_prompt_text}"
+
+    return {
+        "contents": [
+            {"role": "user", "parts": [{"text": full_user_prompt}]},
+            {"role": "model", "parts": [{"text": model_response_text}]}
+        ]
+    }
 
 
 def write_sft_jsonl(rows, path: str, variant: str = "full", scheme: str = "primary") -> str:
-    """Write rows as a Together SFT conversational JSONL file. Returns the path."""
+    """Write rows as a conversational JSONL file for SFT. Returns the path."""
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(to_sft_record(r, variant, scheme), ensure_ascii=False) + "\n")

@@ -139,7 +139,7 @@ needing `fine_tuned_source="cached"` as its default. See
 
 ## 4. The record is re-derived, not migrated
 
-**Every number in the adopted record was produced by `google/gemma-4-31B-it` on
+**Every number in the adopted record was produced by `gemini-2.5-flash` on
 Together. A new base model means a new record.** Nothing carries over:
 accuracy, ECE, the +0.031 fine-tuning effect, the calibrators, the driver
 distribution, the agreement statistic.

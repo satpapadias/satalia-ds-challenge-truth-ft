@@ -1,5 +1,5 @@
 """Threshold tuning + calibration + metadata ablation + selective prediction
-for the lead config (gemma-4-31B-it [full]).
+for the lead config.
 
 Runs in SCORE mode (use_logprobs=False) on purpose: threshold sweeps, reliability,
 and the abstention curve need continuous probabilities, which the 0-100 score
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from truthclf import experiments, selective
 
-LEAD_MODEL = "google/gemma-4-31B-it"
+LEAD_MODEL = "gemini-2.5-flash"
 LEAD_VARIANT = "full"
 
 
@@ -46,8 +46,6 @@ def main():
 
     hr("3. METADATA ABLATION (TEST split): statement-only vs full")
     print(experiments.ablation_table().to_string(index=False))
-    print("\n  -> metadata helps Gemma; for Qwen the 'full' prompt inflates "
-          "rec_True at the expense of rec_False (True-over-prediction bias).")
 
     hr("4. SELECTIVE PREDICTION (TEST, raw-score confidence): coverage vs accuracy")
     ty, tp = res.test_labels, res.test_probs

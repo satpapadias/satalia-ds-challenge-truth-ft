@@ -1,0 +1,26 @@
+{
+  "calibrator": {
+    "A": 0.6954252491390901,
+    "B": -0.2687368610065578,
+    "method": "platt",
+    "selected_by": "margin",
+    "val_nll": 0.6005276906513555
+  },
+  "candidate_val_nll": {
+    "platt": 0.6005276906513555,
+    "temperature": 0.6070197748853795
+  },
+  "elicitation": "logprob",
+  "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
+  "model": "projects/221040857484/locations/us-central1/endpoints/4351713640865333248",
+  "n_val": 1917,
+  "nll_diff_ci": [
+    0.0064920842340240315,
+    0.002493448541197532,
+    0.012438183870190102
+  ],
+  "objective": "balanced_accuracy",
+  "schema": 3,
+  "selected_by": "margin",
+  "threshold": 0.4592777365362753
+}

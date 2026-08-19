@@ -17,6 +17,7 @@ authors = [{ name = "Satalia DS Challenge submission" }]
 # implementations rather than hand-rolling numerical routines.
 dependencies = [
     "diskcache>=5.6",
+    "google-cloud-aiplatform>=1.59",
     "numpy>=1.26",
     "scikit-learn>=1.5",
     "scipy>=1.14",
@@ -50,6 +51,9 @@ agents = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "mcp>=1.2",
+]
+dev = [
+    "pytest>=9.1.1",
 ]
 
 [tool.setuptools]

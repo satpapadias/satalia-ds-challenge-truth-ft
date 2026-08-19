@@ -152,7 +152,7 @@ class JsonAgentExecutor(AgentExecutor):
 # Application
 # ---------------------------------------------------------------------------
 def build_app(*, agent_name: str, executor: AgentExecutor, card_builder: Callable,
-              auth: BearerAuth, extra_routes: list | None = None,
+              auth: BearerAuth | None, extra_routes: list | None = None,
               on_startup: Callable | None = None) -> FastAPI:
     """One agent, one app.
 
@@ -185,7 +185,7 @@ def build_app(*, agent_name: str, executor: AgentExecutor, card_builder: Callabl
         # is a single trace rather than one per hop.
         bind_request(traceparent=request.headers.get("traceparent", ""),
                      run_id=request.headers.get("x-truthclf-run-id", ""))
-        if request.url.path not in exempt and not auth.check(request):
+        if auth and request.url.path not in exempt and not auth.check(request):
             log_event(logger, "unauthorized", path=request.url.path)
             return unauthorized()
         response = await call_next(request)

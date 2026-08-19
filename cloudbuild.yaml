@@ -1,0 +1,42 @@
+# Build instructions for Google Cloud Build.
+#
+# This file defines how to build the two container images for the agent network
+# and push them to the private Artifact Registry. It is invoked via:
+#
+#   gcloud builds submit --config cloudbuild.yaml --substitutions=_REGION=...,_REPOSITORY=...
+#
+# The build uses two stages from the same Dockerfile, which is a standard
+# pattern for creating a smaller final image and for enforcing separation of
+# concerns (the agent image is built unable to import the data-science stack).
+
+steps:
+  # Build the 'tools' image, which contains the truthclf package, the data-science
+  # stack, and the dataset itself. This image is confidential.
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '--target=tools',
+      '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/truthclf-tools:latest',
+      '.'
+    ]
+
+  # Build the 'agent' image, which contains only the A2A/MCP stack and the agent
+  # code. It cannot import truthclf and carries no data.
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '--target=agent',
+      '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/truthclf-agent:latest',
+      '.'
+    ]
+
+# Push both images to the private Artifact Registry upon a successful build.
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/truthclf-tools:latest'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/truthclf-agent:latest'
+
+# Use Cloud Logging for build logs, which avoids the need for a separate GCS
+# logs bucket and the permissions to write to it. This is a key finding from
+# the deployment-plan.md.
+options:
+  logging: CLOUD_LOGGING_ONLY
