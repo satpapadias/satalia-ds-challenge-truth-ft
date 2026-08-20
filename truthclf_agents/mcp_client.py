@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any
 
-import httpx2
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -49,7 +49,7 @@ async def call_tool(server_url: str, tool: str, arguments: dict,
     headers = outbound_headers()
     auth = None if "127.0.0.1" in server_url or "localhost" in server_url else GcpAuth()
     try:
-        async with httpx2.AsyncClient(
+        async with httpx.AsyncClient(
             headers=headers, auth=auth, timeout=timeout
         ) as http_client:
             async with streamable_http_client(server_url, http_client=http_client) as (read, write):
@@ -98,7 +98,7 @@ def _unwrap(tool: str, result) -> Any:
 async def probe(server_url: str) -> list[str]:
     """Tool names exposed by a server. Used as a start-up reachability check."""
     auth = None if "127.0.0.1" in server_url or "localhost" in server_url else GcpAuth()
-    async with httpx2.AsyncClient(
+    async with httpx.AsyncClient(
         auth=auth, timeout=30.0
     ) as http_client:
         async with streamable_http_client(server_url, http_client=http_client) as (read, write):

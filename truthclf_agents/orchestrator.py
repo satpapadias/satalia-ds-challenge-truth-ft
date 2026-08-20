@@ -36,9 +36,9 @@ from .serve import JsonAgentExecutor, build_app, run
 
 AGENT_NAME = "truthclf-orchestrator"
 
-ZERO_SHOT_URL = env_url("ZERO_SHOT_AGENT_URL", "http://127.0.0.1:9101")
-FINE_TUNED_URL = env_url("FINE_TUNED_AGENT_URL", "http://127.0.0.1:9102")
-EXPLAINER_URL = env_url("EXPLAINER_AGENT_URL", "http://127.0.0.1:9103")
+ZERO_SHOT_URL = os.environ.get("ZERO_SHOT_PREDICTOR_URL") or env_url("ZERO_SHOT_AGENT_URL", "http://127.0.0.1:9101")
+FINE_TUNED_URL = os.environ.get("FINE_TUNED_PREDICTOR_URL") or env_url("FINE_TUNED_AGENT_URL", "http://127.0.0.1:9102")
+EXPLAINER_URL = os.environ.get("EXPLAINER_URL") or env_url("EXPLAINER_AGENT_URL", "http://127.0.0.1:9103")
 # Metric computation only. There is deliberately no model-tools address here.
 DATA_TOOLS_URL = env_url("DATA_TOOLS_URL", "http://127.0.0.1:8081/mcp")
 

@@ -180,17 +180,27 @@ class BearerAuth:
                 "an unauthenticated endpoint.")
 
     def check(self, request: Request) -> bool:
-        header = request.headers.get("authorization", "")
-        scheme, _, value = header.partition(" ")
-        if scheme.lower() != "bearer":
-            return False
-        return secrets.compare_digest(value.strip(), self.token)
+        # 1. Try checking the standard Authorization header
+        auth_header = request.headers.get("authorization", "")
+        if auth_header:
+            scheme, _, value = auth_header.partition(" ")
+            if scheme.lower() == "bearer":
+                if secrets.compare_digest(value.strip(), self.token):
+                    return True
+
+        # 2. Fallback for proxies that strip/clash Authorization, like Cloud Run's IAM.
+        api_key_header = request.headers.get("x-api-key", "")
+        if api_key_header:
+            if secrets.compare_digest(api_key_header.strip(), self.token):
+                return True
+
+        return False
 
 
 def unauthorized() -> JSONResponse:
     return JSONResponse(
         {"error": "unauthorized",
-         "detail": "supply a bearer token: Authorization: Bearer <token>"},
+         "detail": "supply a bearer token: 'Authorization: Bearer <token>' or 'X-API-Key: <token>'"},
         status_code=401,
         headers={"WWW-Authenticate": "Bearer"})
 

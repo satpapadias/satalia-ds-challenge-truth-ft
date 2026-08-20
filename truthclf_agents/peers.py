@@ -6,6 +6,7 @@ information that changes only when a peer is redeployed.
 """
 
 from __future__ import annotations
+import httpx
 
 import asyncio
 import logging
@@ -159,14 +160,17 @@ async def discover(name: str, base_url: str, timeout: float = 300.0) -> Peer:
     Authentication is per-hop OIDC for Cloud Run URLs, and none for localhost,
     handled by the GcpAuth flow.
     """
+    # Normalize to match the exact Cloud Run audience, which does not have a
+    # trailing slash.
+    base_url = base_url.rstrip("/")
 
     async def inject_trace(request):
         # Set at send time: one client is shared, but each request needs its own span.
         for key, value in outbound_headers().items():
             request.headers[key] = value
 
-    auth = None if "127.0.0.1" in base_url or "localhost" in base_url else GcpAuth()
-    http = httpx2.AsyncClient(
+    auth = None if "127.0.0.1" in base_url or "localhost" in base_url else GcpAuth(target_audience=base_url)
+    http = httpx.AsyncClient(
         timeout=timeout,
         auth=auth,
         event_hooks={"request": [inject_trace]},

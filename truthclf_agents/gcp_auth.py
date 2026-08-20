@@ -1,50 +1,34 @@
-"""Per-hop OIDC ID token minting for GCP service-to-service calls.
-
-For a Cloud Run URL, it obtains a Google-signed OIDC ID token for the target
-service's base URL (the audience) and attaches it as a bearer token. For any
-other URL (e.g. localhost or a compose service name), it does nothing, so local
-runs continue to work without credentials.
-"""
-
-from __future__ import annotations
-
-import logging
-import os
+"""GCP Identity Token Auth for httpx client calls."""
 
 import httpx
-from google.auth.exceptions import DefaultCredentialsError
+import logging
 
-logger = logging.getLogger(__name__)
-
-# Set by the Cloud Run environment automatically.
-_GCP_SA = os.environ.get("GOOGLE_CLOUD_SERVICE_ACCOUNT", "")
-
-
-def is_cloud_run_url(url: str) -> bool:
-    """True if the URL is a GCP Cloud Run service address."""
-    return url.endswith(".run.app")
-
+logger = logging.getLogger("truthclf.auth")
 
 class GcpAuth(httpx.Auth):
-    """An httpx auth-flow class that mints a per-hop OIDC ID token for GCP calls."""
+    """httpx-compatible Auth flow for fetching GCP Identity Tokens."""
 
-    def __init__(self):
-        self._creds = None
-        self._project = None
-        if _GCP_SA:
-            try:
-                # Lazy import: only needed in the GCP environment.
-                from google.auth import default, transport
-                self._creds, self._project = default()
-                self._request = transport.requests.Request()
-            except (ImportError, DefaultCredentialsError) as e:
-                logger.warning("gcp auth unavailable", error=type(e).__name__,
-                               detail=str(e), service_account=_GCP_SA)
+    def __init__(self, target_audience: str = ""):
+        self.target_audience = target_audience
 
     def auth_flow(self, request: httpx.Request):
-        if self._creds and is_cloud_run_url(str(request.url)):
-            from google.oauth2 import id_token
-            audience = f"{request.url.scheme}://{request.url.host}"
-            token = id_token.fetch_id_token(self._request, audience)
-            request.headers["Authorization"] = f"Bearer {token}"
+        aud = (self.target_audience or f"{request.url.scheme}://{request.url.netloc}").rstrip("/")
+        
+        if "127.0.0.1" not in aud and "localhost" not in aud:
+            token = None
+            try:
+                meta_url = f"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience={aud}"
+                res = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=5.0)
+                if res.status_code == 200:
+                    token = res.text.strip()
+                else:
+                    logger.error(f"Metadata identity fetch returned {res.status_code} for aud={aud}")
+            except Exception as meta_err:
+                logger.error(f"Metadata identity fetch failed for aud={aud}: {meta_err}")
+
+            if token:
+                request.headers["Authorization"] = f"Bearer {token}"
+            else:
+                logger.error(f"Failed to acquire OIDC token for target audience: {aud}")
+
         yield request
