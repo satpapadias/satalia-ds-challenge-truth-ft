@@ -35,9 +35,9 @@ The original dataset contained 6-way human labels. These were mapped to a strict
 * **Terraform** (≥ 1.6)
 
 ### 1. GCP Authentication
-Ensure you are authenticated with GCP Application Default Credentials:
+Ensure you are authenticated with GCP Application Default Credentials, passing the specific project for billing/quota purposes:
 ```bash
-gcloud auth application-default login
+gcloud auth application-default login --project="x-wppai-researchlab-wpptestbed"
 ```
 
 ### 2. Environment Setup (using `uv`)
@@ -78,7 +78,8 @@ AGENT_TOKEN="another-secure-random-string"
 # Weight on the fine-tuned predictor when both answer (log-odds pool). 1.0 defers to it.
 POOL_WEIGHT=1.0
 # Maximum number of statements per /verify request.
-MAX_POINTS=50
+# NOTE: Set this to a lower number (e.g., 2) for local testing to avoid 1 MiB SSE stream limits from the Explainer agent.
+MAX_POINTS=2
 
 # --- Agent Timeouts (seconds) ---
 # Used by the orchestrator for A2A calls.
@@ -103,7 +104,7 @@ export TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/
 
 ## ☁️ Cloud Deployment & Security
 
-The application stack deploys natively to GCP Cloud Run. The `cloudbuild.yaml` file defines a CI/CD pipeline that automatically builds and pushes the agent and tools images to Google Artifact Registry.
+The application stack deploys natively to GCP Cloud Run. The cloudbuild.yaml file defines a CI/CD pipeline that automatically builds and pushes the agent and tools images to Google Artifact Registry.
 
 **Infrastructure Provisioning:**
 ```bash
@@ -116,6 +117,24 @@ terraform apply -var="project_id=x-wppai-researchlab-wpptestbed"
 Once the infrastructure (Artifact Registry, VPC, GCS) is ready, deploy the microservices using:
 ```bash
 ./deploy.sh
+```
+
+### Verifying the Cloud Deployment
+
+To test the live, deployed pipeline on Cloud Run, you can hit the Orchestrator's `/verify` endpoint directly.
+
+*Note: For the best results and to prevent timeout/memory constraints during inference, ensure your `payload.json` contains a smaller batch (e.g., 2–5 statements).*
+
+```bash
+# 1. Fetch an OIDC identity token for authentication
+export GCP_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://truthclf-orchestrator-221040857484.us-central1.run.app")
+
+# 2. Fire the payload to the Orchestrator
+curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/verify \
+  -H "Authorization: Bearer $GCP_TOKEN" \
+  -H "X-API-Key: 269cb82438f318c7bf1be38993c3df4d105d919897b753964c0db21e7847d3f7" \
+  -H "Content-Type: application/json" \
+  -d @payload.json | python3 -m json.tool
 ```
 
 **Defense-in-Depth Security:** 
