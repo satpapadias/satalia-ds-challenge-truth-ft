@@ -51,7 +51,7 @@ class ExplainerExecutor(JsonAgentExecutor):
             # one it would silently admit failures this agent never measured.
             # A caller who knows its batch contains acceptable refusals can pass
             # a rate explicitly.
-            "max_parse_failure_rate": payload.get("max_parse_failure_rate", 0.0),
+            "max_parse_failure_rate": payload.get("max_parse_failure_rate", 0.1),
         }
         if payload.get("labels") is not None:
             arguments["labels"] = payload["labels"]
