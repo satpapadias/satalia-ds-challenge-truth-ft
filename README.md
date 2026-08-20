@@ -138,7 +138,22 @@ curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/v
 ```
 
 **Defense-in-Depth Security:** 
-Service-to-service communication relies on **per-hop OIDC authentication**. The Orchestrator mints a Google-signed ID token using its compute service account and attaches it as a Bearer token. Cloud Run’s IAM edge validates the token on the receiving agent/MCP server. There are **zero `allUsers` ingress bindings**—all traffic is strictly IAM-locked and routed internally via VPC Private Google Access.
+Service-to-service communication relies on **per-hop OIDC authentication**. The Orchestrator mints a Google-signed ID token using its compute service account and attaches it as a Bearer token. Cloud Run’s IAM edge validates the token on the receiving agent/MCP server. There are **zero `allUsers` ingress bindings**—all traffic is strictly IAM-locked and routed internally via VPC Private Google Access. 
+
+## 🔍 Observability & Distributed Tracing
+
+Every request is identified by a `run_id` (scoped to the `/verify` call) and a `context_id` (derived from the payload hash). 
+
+The `run_id` is attached as a structured field to all orchestrator log entries, while the `context_id` propagates automatically through A2A task dispatches to all four A2A agents (the orchestrator, both predictors, and the explainer). This makes the multi-agent fan-out highly debuggable. A single Cloud Logging query can reconstruct the complete lifecycle of a request:
+
+```bash
+# Replace 'ed7bd54e40b14361b197bf66315a99dc' with the context_id from your JSON output
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND "ed7bd54e40b14361b197bf66315a99dc"' \
+  --project="x-wppai-researchlab-wpptestbed" \
+  --format="table(timestamp, resource.labels.service_name, textPayload, jsonPayload.message)" \
+  --order=asc \
+  --freshness=2h
 
 ## 🔬 The MLOps Fine-Tuning Pipeline
 
