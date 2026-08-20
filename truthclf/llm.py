@@ -222,7 +222,6 @@ class VertexClient:
             resp = model.generate_content(
                 contents,
                 generation_config=generation_config,
-                request_options={"timeout": self.timeout},
             )
             self.total_api_seconds += time.time() - t
             self.n_api_calls += 1
