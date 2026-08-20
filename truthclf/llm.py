@@ -161,10 +161,10 @@ def _sdk_version() -> str:
 # ---------------------------------------------------------------------------
 class VertexClient:
     """LLM client for Vertex AI (Gemini)."""
-
+    
     def __init__(self, model: str, cache: ResponseCache | None = None,
                  max_output_tokens: int = 8, temperature: float = 0.0,
-                 max_retries: int = 4, backoff_base: float = 1.0, timeout: float = 120.0,
+                 max_retries: int = 4, backoff_base: float = 1.0, timeout: float = 900.0,
                  max_workers: int = 16, **kwargs):
         self.model = model
         self.max_workers = max(1, int(max_workers))
@@ -222,6 +222,7 @@ class VertexClient:
             resp = model.generate_content(
                 contents,
                 generation_config=generation_config,
+                request_options={"timeout": self.timeout},
             )
             self.total_api_seconds += time.time() - t
             self.n_api_calls += 1
@@ -276,7 +277,7 @@ class VertexClient:
         self.cache.flush()
         return out
 
-    def complete_one(self, messages: list[dict], max_tokens: int = 64) -> str:
+    def complete_one(self, messages: list[dict], max_tokens: int = 512) -> str:
         k = self._cache_key(messages, "complete", max_tokens=max_tokens)
         cached = self.cache.get(k)
         if cached is not None:
@@ -293,7 +294,7 @@ class VertexClient:
         self.cache.set(k, text, backend=self.BACKEND, call="complete", model=self.model)
         return text
 
-    def complete(self, messages_list: list[list[dict]], max_tokens: int = 64) -> list[str]:
+    def complete(self, messages_list: list[list[dict]], max_tokens: int = 512) -> list[str]:
         out = self._map(lambda m: self.complete_one(m, max_tokens), messages_list)
         self.cache.flush()
         return out
