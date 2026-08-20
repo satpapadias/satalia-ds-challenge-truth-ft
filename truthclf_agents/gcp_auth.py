@@ -12,7 +12,7 @@ class GcpAuth(httpx.Auth):
         self.target_audience = target_audience
 
     def auth_flow(self, request: httpx.Request):
-        aud = (self.target_audience or f"{request.url.scheme}://{request.url.netloc}").rstrip("/")
+        aud = (self.target_audience or f"{request.url.scheme}://{request.url.host}").rstrip("/")
         
         if "127.0.0.1" not in aud and "localhost" not in aud:
             token = None
