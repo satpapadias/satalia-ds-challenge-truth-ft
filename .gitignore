@@ -43,3 +43,6 @@ to-be-deleted/
 ft_eval_cache.json
 ft_eval_identity.json
 ft_eval_results.json
+NOTES/
+docs/
+ft_data/
