@@ -5,7 +5,7 @@ uncalibrated. We fit a calibrator on the validation split only and apply it to
 the test split.
 
 Two calibrators, both operating on the logit of the raw probability:
-  - temperature scaling: p_cal = sigmoid(logit(p) / T)        (1 parameter)
+  - temperature scaling:  p_cal = sigmoid(logit(p) / T)        (1 parameter)
   - Platt scaling:        p_cal = sigmoid(A * logit(p) + B)    (2 parameters)
 
 fit_best picks whichever gives lower validation NLL.

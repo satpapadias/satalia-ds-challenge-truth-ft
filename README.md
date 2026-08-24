@@ -132,7 +132,7 @@ export GCP_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.
 # 2. Fire the payload to the Orchestrator
 curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/verify \
   -H "Authorization: Bearer $GCP_TOKEN" \
-  -H "X-API-Key: 269cb82438f318c7bf1be38993c3df4d105d919897b753964c0db21e7847d3f7" \
+  -H "X-API-Key: <INSERT_API_KEY_HERE>" \
   -H "Content-Type: application/json" \
   -d @payload.json | python3 -m json.tool
 ```
@@ -154,6 +154,7 @@ gcloud logging read \
   --format="table(timestamp, resource.labels.service_name, textPayload, jsonPayload.message)" \
   --order=asc \
   --freshness=2h
+```
 
 ## 🔬 The MLOps Fine-Tuning Pipeline
 
