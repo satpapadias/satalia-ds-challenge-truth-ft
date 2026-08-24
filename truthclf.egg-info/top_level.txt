@@ -1,2 +1,0 @@
-truthclf
-truthclf_mcp

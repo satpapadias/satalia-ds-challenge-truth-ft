@@ -173,7 +173,6 @@ class VertexClient:
         self.temperature = temperature
         self.max_retries = max_retries
         self.backoff_base = backoff_base
-        self.timeout = timeout
         self.api_errors = 0
         self.n_api_calls = 0
         self.total_api_seconds = 0.0

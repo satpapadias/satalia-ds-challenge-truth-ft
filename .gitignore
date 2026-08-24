@@ -18,3 +18,28 @@ dist/
 *.zip
 terraform/.terraform/
 terraform/.terraform.lock.hcl
+
+# Sensitive and large data files
+data.csv
+*.pdf
+.env
+response_cache.json
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+
+# Build artifacts
+truthclf.egg-info/
+
+# Results and temporary files
+results/
+ft_*.json
+explain_results.json
+payload.json
+train.jsonl
+to-be-deleted/
+.llm_cache.json
+ft_eval_cache.json
+ft_eval_identity.json
+ft_eval_results.json
