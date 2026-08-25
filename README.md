@@ -156,14 +156,38 @@ gcloud logging read \
   --freshness=2h
 ```
 
-## 🔬 The MLOps Fine-Tuning Pipeline
+<!-- ## 🔬 The MLOps Fine-Tuning Pipeline
 
 If you wish to recreate the fine-tuning process, the MLOps pipeline scripts are located in `scripts/`.
 
 1. **Triggering Vertex SFT:** 
    `scripts/vertex_finetune.py` extracts a 20% speaker-disjoint split, strictly formats it into Vertex AI's `{"contents": [...]}` JSONL schema, uploads to GCS, and submits the `sft.train` job to Google.
 2. **Generating the Decision Artifact:** 
-   `scripts/fit_new_calibrator.py` queries the deployed Vertex endpoint to extract log-probabilities across the validation split, calculating and exporting the Platt Scaling artifact (`results/calibrators/`).
+   `scripts/fit_new_calibrator.py` queries the deployed Vertex endpoint to extract log-probabilities across the validation split, calculating and exporting the Platt Scaling artifact (`results/calibrators/`). -->
+
+## 🔬 Reproducing the Evaluation & SFT Pipeline
+
+Reviewers can fully reproduce the published 72.38% accuracy benchmark and regenerate the Platt scaling decision artifacts directly from the Vertex AI endpoints.
+
+**1. Set your GCP environment variables:**
+Ensure your terminal is authenticated and pointing to the live endpoints:
+```bash
+export GOOGLE_CLOUD_PROJECT="x-wppai-researchlab-wpptestbed"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+export TRUTHCLF_FT_MODEL="projects/221040857484/locations/us-central1/endpoints/4351713640865333248"
+```
+
+**2. Evaluate and calibrate the Zero-Shot Baseline:**
+```bash
+python3 scripts/fit_new_calibrator.py --model "gemini-2.5-flash" --elicitation "logprob"
+```
+
+**3. Evaluate and calibrate the Fine-Tuned Model:**
+```bash
+python3 scripts/fit_new_calibrator.py --model "$TRUTHCLF_FT_MODEL"
+```
+
+*(Note: To recreate the fine-tuning process from scratch, scripts/vertex_finetune.py extracts a 20% speaker-disjoint split, formats it into Vertex AI's JSONL schema, uploads to GCS, and submits the sft.train job.)*
 
 ## 📂 Project Structure
 

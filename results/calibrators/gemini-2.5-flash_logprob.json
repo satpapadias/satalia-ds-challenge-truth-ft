@@ -1,26 +1,26 @@
 {
   "calibrator": {
-    "A": 0.28414730421091056,
-    "B": 0.47378844026754063,
+    "A": 0.2837671306447846,
+    "B": 0.47221365313441577,
     "method": "platt",
     "selected_by": "margin",
-    "val_nll": 0.6199468419462744
+    "val_nll": 0.620443501011471
   },
   "candidate_val_nll": {
-    "platt": 0.6199468419462744,
-    "temperature": 0.6416839103665503
+    "platt": 0.620443501011471,
+    "temperature": 0.642065433215131
   },
   "elicitation": "logprob",
   "fitted_on": "speaker-disjoint validation split (seed 0, scheme primary)",
   "model": "gemini-2.5-flash",
   "n_val": 1917,
   "nll_diff_ci": [
-    0.021737068420275896,
-    0.013131823685511093,
-    0.03235997309752088
+    0.021621932203659933,
+    0.012834708039565842,
+    0.03231775188134493
   ],
   "objective": "balanced_accuracy",
   "schema": 3,
   "selected_by": "margin",
-  "threshold": 0.46957207815286217
+  "threshold": 0.4682739629756432
 }

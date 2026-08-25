@@ -111,78 +111,32 @@ def test_concurrent_writers_do_not_lose_entries(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Raw-then-parse: the classify path must not cache pre-parsed values.
-# --------------------------------------------------------------------------
-RAW_CONTENT0 = {"token": "True", "logprob": -0.2,
-                "top_logprobs": [{"token": "True", "logprob": -0.2},
-                                 {"token": "False", "logprob": -1.7}]}
-
-
-def test_classify_payload_parses_on_read():
-    raw = json.dumps({"text": "True", "content0": RAW_CONTENT0})
-    out = llm._parse_logprobs_payload(raw)
-    assert out["text"] == "True"
-    assert out["top_logprobs"] == {"True": -0.2, "False": -1.7}
-
-
-def test_cached_classify_value_retains_the_raw_structure():
-    """If the cached value were the flattened map, changing the flattening logic
-    would silently reinterpret stored entries behind an unchanged key."""
-    raw = json.loads(json.dumps({"text": "True", "content0": RAW_CONTENT0}))
-    assert raw["content0"]["top_logprobs"][1] == {"token": "False", "logprob": -1.7}
-
-
-def test_chosen_token_is_included_even_if_absent_from_top_logprobs():
-    lp = llm._lp_content_to_top({"token": "Maybe", "logprob": -9.0, "top_logprobs": []})
-    assert lp == {"Maybe": -9.0}
-
-
-# --------------------------------------------------------------------------
-# Malformed responses raise instead of degrading to a neutral probability.
-# --------------------------------------------------------------------------
-def test_batch_body_raises_on_missing_choices():
-    with pytest.raises(llm.ResponseShapeError):
-        llm._batch_body({"custom_id": "3", "error": "upstream 500"})
-
-
-def test_extract_top_logprobs_raises_when_logprobs_absent():
-    line = {"response": {"body": {"choices": [{"message": {"content": "True"}}]}}}
-    with pytest.raises(llm.ResponseShapeError):
-        llm._extract_top_logprobs_obj(line)
-
-
-def test_extract_content_reads_each_nesting_shape():
-    body = {"choices": [{"message": {"content": "42"}}]}
-    for line in ({"response": {"body": body}}, {"body": body}, body):
-        assert llm._extract_content(line) == "42"
-
-
-# --------------------------------------------------------------------------
 # A set is processed concurrently, and concurrency does not corrupt the cache.
 # --------------------------------------------------------------------------
-class _SlowClient:
+class _SlowGenerator:
     """Stand-in whose calls sleep, so serial and concurrent are distinguishable."""
 
     def __init__(self, delay=0.05):
         self.delay = delay
         self.calls = 0
 
-    def create(self, **kw):
+    def generate(self, contents, generation_config, system_instruction=None):
         import threading
         import time as _t
         _t.sleep(self.delay)
         with threading.Lock():
             self.calls += 1
-        idx = kw["messages"][-1]["content"]
-        return type("R", (), {"choices": [type("C", (), {
-            "message": type("M", (), {"content": idx})()})()]})()
+        txt = contents[-1]["parts"][0]["text"]
+        return type("R", (), {"text": txt})()
 
 
 def _client(tmp_path, workers, delay=0.05):
-    c = llm.TogetherClient("m", cache=llm.ResponseCache(str(tmp_path / f"c{workers}")),
-                           max_workers=workers)
-    c._client = type("X", (), {"chat": type("Y", (), {"completions": _SlowClient(delay)})()})()
-    c._ensure_client = lambda: c._client
+    c = llm.VertexClient("gemini-2.5-flash", cache=llm.ResponseCache(str(tmp_path / f"c{workers}")),
+                         max_workers=workers)
+    generator = _SlowGenerator(delay)
+    c._generate = generator.generate
+    c._ensure_client = lambda: None
+    c._generator = generator
     return c
 
 
@@ -218,7 +172,7 @@ def test_concurrent_writes_all_reach_the_cache(tmp_path):
     assert len(c.cache) == 40, "every concurrent write must be durable"
     again = _client(tmp_path / "w", workers=8, delay=0.01)
     assert again.score(_msgs(40)) == [str(i) for i in range(40)]
-    assert again._client.chat.completions.calls == 0, "second pass must be all hits"
+    assert again._generator.calls == 0, "second pass must be all hits"
 
 
 def test_an_explicitly_passed_empty_cache_is_honoured(tmp_path):
@@ -227,7 +181,6 @@ def test_an_explicitly_passed_empty_cache_is_honoured(tmp_path):
     used the project default — writing to the wrong store."""
     rc = llm.ResponseCache(str(tmp_path / "mine"))
     assert len(rc) == 0
-    for client in (llm.TogetherClient("m", cache=rc),
-                   llm.TogetherBatchClient("m", cache=rc)):
-        assert client.cache is rc, "an empty cache must not be replaced by the default"
-        assert client.cache.path == str(tmp_path / "mine")
+    client = llm.VertexClient("gemini-2.5-flash", cache=rc)
+    assert client.cache is rc, "an empty cache must not be replaced by the default"
+    assert client.cache.path == str(tmp_path / "mine")

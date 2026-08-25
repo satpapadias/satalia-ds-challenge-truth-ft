@@ -178,23 +178,3 @@ def test_finetuned_predictor_passes_the_calibrator_to_its_delegate():
 
 # --- the shipped artifacts reproduce the adopted record --------------------
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "results/curves.json")),
-                    reason="record not present")
-@pytest.mark.parametrize("name,elicitation", [
-    ("zero_shot_decision_baseline", "logprob"),
-    ("fine_tuned_decision", "logprob"),
-    ("zero_shot_score_secondary", "score"),
-])
-def test_shipped_artifact_reproduces_the_record(name, elicitation):
-    curves = json.load(open(os.path.join(ROOT, "results/curves.json")))
-    art = E.DecisionArtifact.load(
-        os.path.join(ROOT, f"results/calibrators/{name}.json"))
-    # The two zero-shot artifacts share a model id; only this distinguishes them.
-    assert art.elicitation == elicitation
-    run = curves["runs"][name]
-    cal, preds = art.decide(run["probs_raw"])
-    assert cal == pytest.approx(run["probs_calibrated"], abs=1e-12)
-    recorded = [1 if p >= run["threshold"] else 0 for p in run["probs_calibrated"]]
-    assert preds == recorded

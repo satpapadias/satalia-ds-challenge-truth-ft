@@ -5,9 +5,7 @@ SET of rows and returns per-point predictions/probabilities plus evaluation
 metrics when labels are supplied. Uses the Together serverless model; responses
 are cached on disk so reruns are free.
 
-Usage:  python3 predict.py            # 20 held-out rows, gemma-4-31B-it [full]
 """
-
 from __future__ import annotations
 
 from truthclf import experiments
