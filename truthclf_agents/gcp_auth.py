@@ -12,17 +12,22 @@ class GcpAuth(httpx.Auth):
         self.target_audience = target_audience
 
     def auth_flow(self, request: httpx.Request):
+        # Fallback for sync requests
+        yield request
+
+    async def async_auth_flow(self, request: httpx.Request):
         aud = (self.target_audience or f"{request.url.scheme}://{request.url.host}").rstrip("/")
         
         if "127.0.0.1" not in aud and "localhost" not in aud:
             token = None
             try:
                 meta_url = f"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience={aud}"
-                res = httpx.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=5.0)
-                if res.status_code == 200:
-                    token = res.text.strip()
-                else:
-                    logger.error(f"Metadata identity fetch returned {res.status_code} for aud={aud}")
+                async with httpx.AsyncClient() as client:
+                    res = await client.get(meta_url, headers={"Metadata-Flavor": "Google"}, timeout=5.0)
+                    if res.status_code == 200:
+                        token = res.text.strip()
+                    else:
+                        logger.error(f"Metadata identity fetch returned {res.status_code} for aud={aud}")
             except Exception as meta_err:
                 logger.error(f"Metadata identity fetch failed for aud={aud}: {meta_err}")
 
