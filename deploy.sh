@@ -22,6 +22,12 @@ if [[ -z "${ORCHESTRATOR_TOKEN:-}" ]]; then
     echo "Generate a secure random string and export it, e.g.:" >&2
     echo "  export ORCHESTRATOR_TOKEN=\$(openssl rand -hex 32)" >&2
     exit 1
+fi 
+
+if [[ -z "${TRUTHCLF_FT_MODEL:-}" ]]; then
+    echo "ERROR: TRUTHCLF_FT_MODEL is not set." >&2
+    echo "Set it to your Vertex AI Fine-Tuned Model Endpoint ID and re-run." >&2
+    exit 1
 fi
 
 PROJECT_ID=$GOOGLE_CLOUD_PROJECT

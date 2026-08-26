@@ -48,7 +48,7 @@ RUN uv sync --frozen --extra mcp
 #
 # THIS IMAGE CONTAINS THE CHALLENGE DATASET. It must only ever be pushed to a
 # private registry inside the same trust boundary as the data itself.
-COPY data.csv ft_eval_cache.json ft_eval_identity.json ./
+COPY data.csv ./
 COPY results/calibrators/ ./results/calibrators/
 
 RUN useradd --create-home --uid 10001 app \

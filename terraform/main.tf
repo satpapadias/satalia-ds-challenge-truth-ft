@@ -5,12 +5,8 @@ terraform {
       version = ">= 5.35"
     }
   }
-
-  # The GCS backend stores the state of the deployment in a shared bucket, so
-  # that it is not tied to one operator's laptop. The bucket itself must be
-  # created out-of-band before the first `terraform init`.
   backend "gcs" {
-    bucket = "x-wppai-researchlab-wpptestbed-truthclf-tfstate" # NOTE: update after running bootstrap.sh
+    bucket = "x-wppai-researchlab-wpptestbed-truthclf-tfstate"
     prefix = "cloud-run"
   }
 }
@@ -20,7 +16,6 @@ provider "google" {
   region  = var.region
 }
 
-# APIs that must be enabled in the project before these resources can be created.
 resource "google_project_service" "apis" {
   for_each = toset([
     "run.googleapis.com",
@@ -35,17 +30,14 @@ resource "google_project_service" "apis" {
   disable_on_destroy         = false
 }
 
-# A private repository to hold the two container images.
 resource "google_artifact_registry_repository" "repo" {
-  depends_on   = [google_project_service.apis]
-  provider     = google-beta
-  location     = var.region
+  depends_on    = [google_project_service.apis]
+  provider      = google-beta
+  location      = var.region
   repository_id = var.repository
-  description  = "Container images for the truthclf agent network."
-  format       = "DOCKER"
+  description   = "Container images for the truthclf agent network."
+  format        = "DOCKER"
 }
-
-# --- Service accounts: one per service, for least-privilege IAM ---
 
 locals {
   service_names = [
@@ -56,11 +48,6 @@ locals {
     "explainer",
     "orchestrator",
   ]
-}
-locals {
-  # GCP requires service account IDs to be between 6 and 30 characters. The
-  # generated names for the two predictor services are too long. This map
-  # provides shortened IDs for them.
   service_account_ids = {
     "data-tools"           = "sa-truthclf-data-tools"
     "model-tools"          = "sa-truthclf-model-tools"
@@ -70,20 +57,16 @@ locals {
     "orchestrator"         = "sa-truthclf-orchestrator"
   }
 }
+
 resource "google_service_account" "service_accounts" {
   for_each     = toset(local.service_names)
   account_id   = local.service_account_ids[each.key]
   display_name = "SA for truthclf ${each.key} service"
 }
 
-# --- Secrets ---
-
 resource "google_secret_manager_secret" "orchestrator_token" {
   depends_on = [google_project_service.apis]
   secret_id  = "truthclf-orchestrator-token"
-  # Explicitly define a replication policy instead of relying on 'automatic',
-  # which has been causing provider-version-related syntax errors. This is
-  # functionally equivalent for a single-region deployment.
   replication {
     user_managed {
       replicas {
@@ -104,23 +87,16 @@ resource "google_secret_manager_secret_iam_member" "orchestrator_token_accessor"
   member    = "serviceAccount:${google_service_account.service_accounts["orchestrator"].email}"
 }
 
-# --- Cloud Run services: one per container ---
-
 locals {
-  # Image paths, assuming Cloud Build pushes with these tags.
   tools_image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository}/truthclf-tools:latest"
   agent_image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository}/truthclf-agent:latest"
-
-  # Common agent environment variables.
   agent_env = {
-    HOST                 = "0.0.0.0"
-    GOOGLE_CLOUD_PROJECT = var.project_id
-    # The Vertex AI client needs the region to be explicitly configured.
+    HOST                  = "0.0.0.0"
+    GOOGLE_CLOUD_PROJECT  = var.project_id
     GOOGLE_CLOUD_LOCATION = var.region
   }
 }
 
-# Level 0: Tool services, with no dependencies on other services.
 resource "google_cloud_run_v2_service" "tool_services" {
   depends_on = [google_project_service.apis]
   for_each   = {
@@ -135,9 +111,9 @@ resource "google_cloud_run_v2_service" "tool_services" {
       command = ["python", "-m", "truthclf_mcp.model_tools", "--host", "0.0.0.0"]
     }
   }
-  name     = "truthclf-${each.key}"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  name                = "truthclf-${each.key}"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
   template {
@@ -147,13 +123,11 @@ resource "google_cloud_run_v2_service" "tool_services" {
       command = each.value.command
       ports { container_port = each.value.port }
       startup_probe {
-        tcp_socket {
-          port = each.value.port
-        }
+        tcp_socket { port = each.value.port }
         initial_delay_seconds = 10
         timeout_seconds       = 5
         period_seconds        = 10
-        failure_threshold     = 12 # 120s total before giving up
+        failure_threshold     = 12
       }
       dynamic "env" {
         for_each = local.agent_env
@@ -166,7 +140,6 @@ resource "google_cloud_run_v2_service" "tool_services" {
   }
 }
 
-# Level 1: Specialist agents, which depend on the model-tools service.
 resource "google_cloud_run_v2_service" "specialist_agents" {
   depends_on = [google_cloud_run_v2_service.tool_services]
   for_each   = {
@@ -174,31 +147,31 @@ resource "google_cloud_run_v2_service" "specialist_agents" {
       image   = local.agent_image
       port    = 8080
       command = ["python", "-m", "truthclf_agents.zero_shot", "--host", "0.0.0.0"]
-      env = {
-        MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
-      },
+      memory  = "8Gi"
+      cpu     = "2"
+      env = { MODEL_TOOLS_URL = "${google_cloud_run_v2_service.tool_services["model-tools"].uri}/mcp" }
     },
     "fine-tuned-predictor" = {
       image   = local.agent_image
       port    = 8080
       command = ["python", "-m", "truthclf_agents.fine_tuned", "--host", "0.0.0.0"]
-      env = {
-        MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
-      },
+      memory  = "8Gi"
+      cpu     = "2"
+      env = { MODEL_TOOLS_URL = "${google_cloud_run_v2_service.tool_services["model-tools"].uri}/mcp" }
     },
     "explainer" = {
       image   = local.agent_image
       port    = 8080
       command = ["python", "-m", "truthclf_agents.explainer", "--host", "0.0.0.0"]
-      env = {
-        MODEL_TOOLS_URL = google_cloud_run_v2_service.tool_services["model-tools"].uri
-      },
+      memory  = "4Gi"
+      cpu     = "2"
+      env = { MODEL_TOOLS_URL = "${google_cloud_run_v2_service.tool_services["model-tools"].uri}/mcp" }
     }
   }
 
-  name     = "truthclf-${each.key}"
-  location = var.region
-  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  name                = "truthclf-${each.key}"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
   template {
@@ -207,14 +180,20 @@ resource "google_cloud_run_v2_service" "specialist_agents" {
       image   = each.value.image
       command = each.value.command
       ports { container_port = each.value.port }
-      startup_probe {
-        tcp_socket {
-          port = each.value.port
+      
+      resources {
+        limits = {
+          memory = each.value.memory
+          cpu    = each.value.cpu
         }
+      }
+
+      startup_probe {
+        tcp_socket { port = each.value.port }
         initial_delay_seconds = 10
         timeout_seconds       = 5
         period_seconds        = 10
-        failure_threshold     = 12
+        failure_threshold     = 24
       }
       dynamic "env" {
         for_each = merge(local.agent_env, each.value.env)
@@ -227,12 +206,11 @@ resource "google_cloud_run_v2_service" "specialist_agents" {
   }
 }
 
-# Level 2: The orchestrator, which depends on all other services.
 resource "google_cloud_run_v2_service" "orchestrator" {
   depends_on = [google_cloud_run_v2_service.specialist_agents]
-  name       = "truthclf-orchestrator"
-  location   = var.region
-  ingress    = "INGRESS_TRAFFIC_ALL"
+  name                = "truthclf-orchestrator"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
   template {
@@ -241,10 +219,16 @@ resource "google_cloud_run_v2_service" "orchestrator" {
       image   = local.agent_image
       command = ["python", "-m", "truthclf_agents.orchestrator", "--host", "0.0.0.0"]
       ports { container_port = 8080 }
-      startup_probe {
-        tcp_socket {
-          port = 8080
+      
+      resources {
+        limits = {
+          memory = "2Gi"
+          cpu    = "1"
         }
+      }
+
+      startup_probe {
+        tcp_socket { port = 8080 }
         initial_delay_seconds = 10
         timeout_seconds       = 5
         period_seconds        = 10
@@ -255,7 +239,7 @@ resource "google_cloud_run_v2_service" "orchestrator" {
           ZERO_SHOT_AGENT_URL  = google_cloud_run_v2_service.specialist_agents["zero-shot-predictor"].uri
           FINE_TUNED_AGENT_URL = google_cloud_run_v2_service.specialist_agents["fine-tuned-predictor"].uri
           EXPLAINER_AGENT_URL  = google_cloud_run_v2_service.specialist_agents["explainer"].uri
-          DATA_TOOLS_URL       = google_cloud_run_v2_service.tool_services["data-tools"].uri
+          DATA_TOOLS_URL       = "${google_cloud_run_v2_service.tool_services["data-tools"].uri}/mcp"
           POOL_WEIGHT          = var.pool_weight
           MAX_POINTS           = var.max_points
         })
@@ -280,19 +264,14 @@ resource "google_cloud_run_v2_service" "orchestrator" {
   }
 }
 
-# --- IAM: grant invoker permissions for service-to-service calls ---
-
 locals {
-  # Defines which services can call which other services.
   call_graph = {
-    orchestrator = ["zero-shot-predictor", "fine-tuned-predictor", "explainer", "data-tools"],
+    orchestrator         = ["zero-shot-predictor", "fine-tuned-predictor", "explainer", "data-tools"],
     zero-shot-predictor  = ["model-tools"],
     fine-tuned-predictor = ["model-tools"],
     explainer            = ["model-tools"],
   }
-}
 
-locals {
   all_services = merge(
     google_cloud_run_v2_service.tool_services,
     google_cloud_run_v2_service.specialist_agents,
@@ -300,12 +279,10 @@ locals {
   )
 }
 
-# Flatten the graph into a list of {caller, callee} pairs for the resource loop.
 resource "google_cloud_run_v2_service_iam_member" "invoker_bindings" {
   for_each = { for pair in setproduct(local.service_names, local.service_names) :
     "${pair[0]}-to-${pair[1]}" => { caller = pair[0], callee = pair[1] } if contains(lookup(local.call_graph, pair[0], []), pair[1])
   }
-
   project  = var.project_id
   location = var.region
   name     = local.all_services[each.value.callee].name

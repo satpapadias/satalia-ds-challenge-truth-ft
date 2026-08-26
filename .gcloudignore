@@ -1,0 +1,8 @@
+.git
+.venv
+.env
+.llm_cache
+.pytest_cache
+__pycache__
+!data.csv
+!results/**

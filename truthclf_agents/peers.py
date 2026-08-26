@@ -21,7 +21,6 @@ from a2a.types import (Message, Part, Role, SendMessageRequest, TaskState)
 from google.protobuf import json_format, struct_pb2
 
 from .common import log_event, outbound_headers, timed
-from .gcp_auth import GcpAuth
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +67,7 @@ class Peer:
 
     async def ask(self, payload: dict, *, context_id: str,
                   timeout: float = 300.0) -> PeerReply:
-        """Send one message and collect the peer's final result.
-
-        The context id is passed through so every agent's task records for one
-        verification run share a single identifier.
-        """
+        """Send one message and collect the peer's final result."""
         value = struct_pb2.Value()
         json_format.ParseDict(payload, value)
         message = Message(
@@ -103,14 +98,7 @@ class Peer:
         return reply
 
     async def _collect(self, request: SendMessageRequest) -> PeerReply:
-        """Reduce the event stream to the final result.
-
-        Both transports arrive here as an async iterator. The non-streaming one
-        yields a single Task; the streaming one yields a Task followed by status
-        updates. The terminal event is found by state rather than by position,
-        since neither the count nor the order of intermediate updates is
-        guaranteed.
-        """
+        """Reduce the event stream to the final result."""
         payload: dict = {}
         summary = ""
         state = TaskState.Name(TaskState.TASK_STATE_UNSPECIFIED)
@@ -150,30 +138,33 @@ def _read_parts(message) -> tuple[dict, str]:
 
 
 async def discover(name: str, base_url: str, timeout: float = 300.0) -> Peer:
-    """Fetch a peer's card and build a client from it.
-
-    The card decides the transport: the SDK streams only when both this client
-    and the peer's advertised capability allow it, so an agent that declares
-    itself non-streaming is called with a plain send even when streaming was
-    requested. That makes the card the single place the choice is expressed.
-
-    Authentication is per-hop OIDC for Cloud Run URLs, and none for localhost,
-    handled by the GcpAuth flow.
-    """
-    # Normalize to match the exact Cloud Run audience, which does not have a
-    # trailing slash.
+    """Fetch a peer's card and build a client from it."""
     base_url = base_url.rstrip("/")
 
-    async def inject_trace(request):
-        # Set at send time: one client is shared, but each request needs its own span.
+    # Fetch token explicitly, completely bypassing httpx.Auth bugs
+    is_local = "127.0.0.1" in base_url or "localhost" in base_url
+    gcp_token = None
+    
+    if not is_local:
+        try:
+            import google.auth.transport.requests
+            import google.oauth2.id_token
+            auth_req = google.auth.transport.requests.Request()
+            gcp_token = google.oauth2.id_token.fetch_id_token(auth_req, base_url)
+        except Exception as e:
+            logger.error(f"Explicit token fetch failed for {base_url}: {e}")
+
+    async def inject_auth_and_trace(request: httpx.Request):
+        # Attach the token natively to the outgoing headers
+        if gcp_token:
+            request.headers["Authorization"] = f"Bearer {gcp_token}"
+            
         for key, value in outbound_headers().items():
             request.headers[key] = value
 
-    auth = None if "127.0.0.1" in base_url or "localhost" in base_url else GcpAuth(target_audience=base_url)
     http = httpx.AsyncClient(
         timeout=timeout,
-        auth=auth,
-        event_hooks={"request": [inject_trace]},
+        event_hooks={"request": [inject_auth_and_trace]},
     )
 
     card = await A2ACardResolver(http, base_url).get_agent_card()

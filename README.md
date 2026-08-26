@@ -134,7 +134,7 @@ curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/v
   -H "Authorization: Bearer $GCP_TOKEN" \
   -H "X-API-Key: <INSERT_API_KEY_HERE>" \
   -H "Content-Type: application/json" \
-  -d @payload.json | python3 -m json.tool
+  -d @examples/payload.json | python3 -m json.tool
 ```
 
 **Defense-in-Depth Security:** 
@@ -155,15 +155,6 @@ gcloud logging read \
   --order=asc \
   --freshness=2h
 ```
-
-<!-- ## 🔬 The MLOps Fine-Tuning Pipeline
-
-If you wish to recreate the fine-tuning process, the MLOps pipeline scripts are located in `scripts/`.
-
-1. **Triggering Vertex SFT:** 
-   `scripts/vertex_finetune.py` extracts a 20% speaker-disjoint split, strictly formats it into Vertex AI's `{"contents": [...]}` JSONL schema, uploads to GCS, and submits the `sft.train` job to Google.
-2. **Generating the Decision Artifact:** 
-   `scripts/fit_new_calibrator.py` queries the deployed Vertex endpoint to extract log-probabilities across the validation split, calculating and exporting the Platt Scaling artifact (`results/calibrators/`). -->
 
 ## 🔬 Reproducing the Evaluation & SFT Pipeline
 
@@ -200,8 +191,18 @@ satalia-ds-challenge-truth-ft/
 ├── cloudbuild.yaml             # GCP Cloud Build CI/CD pipeline
 ├── test_pipeline.sh            # Master boot & test execution script
 ├── deploy.sh                   # Cloud Run deployment script
+├── payload.json                # Example payload for verification API
+├── data.csv                    # Dataset source
 ├── terraform/                  # GCP Infrastructure as Code
+│   ├── main.tf
+│   ├── outputs.tf
+│   └── variables.tf
 ├── truthclf/                   # Core application logic & domain objects
+│   ├── calibration.py
+│   ├── data.py
+│   ├── llm.py
+│   ├── metrics.py
+│   └── predictors/
 ├── truthclf_agents/            # A2A Agent implementations (pure MCP clients)
 │   ├── orchestrator.py
 │   ├── zero_shot.py
@@ -210,10 +211,14 @@ satalia-ds-challenge-truth-ft/
 ├── truthclf_mcp/               # Model Context Protocol servers
 │   ├── data_tools.py
 │   └── model_tools.py
-├── scripts/                    # Standalone MLOps scripts
+├── docs/                       # Architecture decisions & migration guides
+├── ft_data/                    # SFT training & validation JSONL splits
+├── scripts/                    # Standalone MLOps & utility scripts
 │   ├── vertex_finetune.py      # Data prep and SFT trigger
 │   └── fit_new_calibrator.py   # Platt scaling generation
 ├── tests/                      # Pytest integration & unit tests
+├── examples/                   # Sample payloads and request examples
+│   └── payload.json
 └── results/
     └── calibrators/            # JSON Platt-scaling configurations
 ```
