@@ -48,6 +48,12 @@ uv sync --all-groups --all-extras
 ```
 *(Alternatively, via pip: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[viz,dev,mcp]"`)*
 
+## 🧪 Running Tests
+The project includes a comprehensive test suite to verify A2A agent logic, dataset handling, and calibration mechanisms. To run the tests and verify the suite is green:
+```bash
+pytest tests/ -v
+```
+
 ## ⚙️ Configuration (.env)
 
 Create a `.env` file from the example (`cp .env.example .env`) and populate it. These variables configure the entire stack, for both local `docker-compose` and cloud deployments.
@@ -75,7 +81,8 @@ ORCHESTRATOR_TOKEN="a-secure-random-string"
 AGENT_TOKEN="another-secure-random-string"
 
 # --- Pipeline Behavior ---
-# Weight on the fine-tuned predictor when both answer (log-odds pool). 1.0 defers to it.
+# Weight on the fine-tuned predictor when both answer (log-odds pool). 
+# Note: A value of 1.0 explicitly bypasses the log-odds combination and delegates entirely to the fine-tuned model.
 POOL_WEIGHT=1.0
 # Maximum number of statements per /verify request.
 # NOTE: Set this to a lower number (e.g., 2) for local testing to avoid 1 MiB SSE stream limits from the Explainer agent.
@@ -127,10 +134,10 @@ To test the live, deployed pipeline on Cloud Run, you can hit the Orchestrator's
 
 ```bash
 # 1. Fetch an OIDC identity token for authentication
-export GCP_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://truthclf-orchestrator-221040857484.us-central1.run.app")
+export GCP_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://truthclf-orchestrator-unuckv2dpa-uc.a.run.app")
 
 # 2. Fire the payload to the Orchestrator
-curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/verify \
+curl -s -X POST https://truthclf-orchestrator-unuckv2dpa-uc.a.run.app/verify \
   -H "Authorization: Bearer $GCP_TOKEN" \
   -H "X-API-Key: <INSERT_API_KEY_HERE>" \
   -H "Content-Type: application/json" \
@@ -138,7 +145,7 @@ curl -s -X POST https://truthclf-orchestrator-221040857484.us-central1.run.app/v
 ```
 
 **Defense-in-Depth Security:** 
-Service-to-service communication relies on **per-hop OIDC authentication**. The Orchestrator mints a Google-signed ID token using its compute service account and attaches it as a Bearer token. Cloud Run’s IAM edge validates the token on the receiving agent/MCP server. There are **zero `allUsers` ingress bindings**—all traffic is strictly IAM-locked and routed internally via VPC Private Google Access. 
+Service-to-service communication relies on **per-hop OIDC authentication**. The Orchestrator mints a Google-signed ID token using its compute service account and attaches it as a Bearer token. Cloud Run’s IAM edge validates the token on the receiving agent/MCP server. While services use `INGRESS_TRAFFIC_ALL` to allow serverless routing, there are **zero `allUsers` ingress bindings**—all traffic is strictly IAM-locked, returning 403 Forbidden to unauthorized requests.
 
 ## 🔍 Observability & Distributed Tracing
 
@@ -147,9 +154,9 @@ Every request is identified by a `run_id` (scoped to the `/verify` call) and a `
 The `run_id` is attached as a structured field to all orchestrator log entries, while the `context_id` propagates automatically through A2A task dispatches to all four A2A agents (the orchestrator, both predictors, and the explainer). This makes the multi-agent fan-out highly debuggable. A single Cloud Logging query can reconstruct the complete lifecycle of a request:
 
 ```bash
-# Replace 'ed7bd54e40b14361b197bf66315a99dc' with the context_id from your JSON output
+# Replace 'aa98278630c54ff184eab0f5c27aaf49' with the context_id from your JSON output
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND "ed7bd54e40b14361b197bf66315a99dc"' \
+  'resource.type="cloud_run_revision" AND "aa98278630c54ff184eab0f5c27aaf49"' \
   --project="x-wppai-researchlab-wpptestbed" \
   --format="table(timestamp, resource.labels.service_name, textPayload, jsonPayload.message)" \
   --order=asc \
